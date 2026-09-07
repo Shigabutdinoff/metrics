@@ -3,8 +3,6 @@ package auditmw
 import (
 	"bytes"
 	"encoding/json"
-	"errors"
-	"io"
 	"net"
 	"net/http"
 	"net/url"
@@ -13,11 +11,10 @@ import (
 	"github.com/go-chi/chi/v5"
 	"github.com/go-chi/chi/v5/middleware"
 	"github.com/shigabutdinoff/metrics/internal/audit"
+	"github.com/shigabutdinoff/metrics/internal/handlers/middleware/reqbody"
 	"github.com/shigabutdinoff/metrics/internal/model/metrics"
 	"go.uber.org/zap"
 )
-
-const maxBodySize = 10 << 20
 
 type extractor func(r *http.Request, body []byte) ([]string, error)
 
@@ -34,7 +31,7 @@ func FromBody(n audit.Notifier, log *zap.Logger) func(http.Handler) http.Handler
 func wrap(n audit.Notifier, log *zap.Logger, ex extractor) func(http.Handler) http.Handler {
 	return func(next http.Handler) http.Handler {
 		return http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
-			body, ok := readBody(w, r)
+			body, ok := reqbody.Read(w, r)
 			if !ok {
 				return
 			}
@@ -59,27 +56,6 @@ func wrap(n audit.Notifier, log *zap.Logger, ex extractor) func(http.Handler) ht
 			})
 		})
 	}
-}
-
-func readBody(w http.ResponseWriter, r *http.Request) ([]byte, bool) {
-	if r.Body == nil || r.Body == http.NoBody {
-		return nil, true
-	}
-
-	r.Body = http.MaxBytesReader(w, r.Body, maxBodySize)
-	body, err := io.ReadAll(r.Body)
-	if err != nil {
-		var maxErr *http.MaxBytesError
-		if errors.As(err, &maxErr) {
-			http.Error(w, "тело запроса слишком велико", http.StatusRequestEntityTooLarge)
-		} else {
-			http.Error(w, "не удалось прочитать тело запроса", http.StatusBadRequest)
-		}
-		return nil, false
-	}
-	r.Body = io.NopCloser(bytes.NewReader(body))
-
-	return body, true
 }
 
 func namesFromBody(_ *http.Request, body []byte) ([]string, error) {

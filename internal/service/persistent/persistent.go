@@ -24,12 +24,14 @@ func New(st storage.Storage, path string, log *zap.Logger) *Service {
 }
 
 func (s *Service) Save() error {
-	var out []m.Metrics
 	ctx := context.Background()
-	for name, v := range s.st.GetGauges(ctx) {
+	gauges := s.st.GetGauges(ctx)
+	counters := s.st.GetCounters(ctx)
+	out := make([]m.Metrics, 0, len(gauges)+len(counters))
+	for name, v := range gauges {
 		out = append(out, m.Metrics{ID: name, MType: m.Gauge, Value: v})
 	}
-	for name, d := range s.st.GetCounters(ctx) {
+	for name, d := range counters {
 		out = append(out, m.Metrics{ID: name, MType: m.Counter, Delta: d})
 	}
 

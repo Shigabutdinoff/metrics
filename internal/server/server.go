@@ -40,6 +40,7 @@ const (
 	DefaultKey             = ""
 	DefaultAuditFile       = ""
 	DefaultAuditURL        = ""
+	DefaultPprofAddress    = ""
 )
 
 type Server struct {
@@ -54,6 +55,7 @@ type Server struct {
 	Key             string `env:"KEY"`
 	AuditFile       string `env:"AUDIT_FILE"`
 	AuditURL        string `env:"AUDIT_URL"`
+	PprofAddress    string `env:"PPROF_ADDRESS"`
 	auditor         *audit.Publisher
 	auditClosers    []io.Closer
 	onChange        func()
@@ -72,6 +74,7 @@ func New(st storage.Storage, logger *zap.Logger) *Server {
 		Key:             DefaultKey,
 		AuditFile:       DefaultAuditFile,
 		AuditURL:        DefaultAuditURL,
+		PprofAddress:    DefaultPprofAddress,
 	}
 
 	return s
@@ -134,10 +137,31 @@ func (s *Server) Run() {
 
 	s.configurePersistence(ps)
 
+	if s.PprofAddress != "" {
+		// WriteTimeout ограничивает ?seconds= у pprof-обработчиков
+		pprof := &http.Server{
+			Addr:              s.PprofAddress,
+			Handler:           pprofHandler(),
+			ReadHeaderTimeout: 5 * time.Second,
+			WriteTimeout:      60 * time.Second,
+		}
+		go func() {
+			if err := pprof.ListenAndServe(); err != nil {
+				s.Logger.Warn("pprof не запущен", zap.Error(err))
+			}
+		}()
+	}
+
 	if err := http.ListenAndServe(s.Address, s.Router); err != nil {
 		s.Logger.Fatal("Failed to start server", zap.Error(err))
 		panic(err)
 	}
+}
+
+func pprofHandler() http.Handler {
+	r := chi.NewRouter()
+	r.Mount("/debug", middleware.Profiler())
+	return r
 }
 
 func (s *Server) initDatabaseOrRestore(ps *persistent.Service) error {

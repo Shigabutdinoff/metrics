@@ -5,9 +5,12 @@ import (
 	"crypto/hmac"
 	"crypto/sha256"
 	"encoding/hex"
+	"errors"
+	"fmt"
 	"io"
 	"net/http"
 	"net/http/httptest"
+	"sync"
 	"testing"
 
 	"go.uber.org/zap"
@@ -115,6 +118,25 @@ func TestMiddleware_Request(t *testing.T) {
 	}
 }
 
+type brokenBody struct{}
+
+func (brokenBody) Read([]byte) (int, error) { return 0, errors.New("поток повреждён") }
+func (brokenBody) Close() error             { return nil }
+
+func TestMiddleware_BrokenBody(t *testing.T) {
+	next := http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		t.Fatal("хендлер не должен вызываться")
+	})
+	h := Middleware("secret", zap.NewNop())(next)
+
+	req := httptest.NewRequest(http.MethodPost, "/updates/", brokenBody{})
+	rr := httptest.NewRecorder()
+	h.ServeHTTP(rr, req)
+	if rr.Code != http.StatusBadRequest {
+		t.Fatalf("статус = %d, ожидается %d", rr.Code, http.StatusBadRequest)
+	}
+}
+
 func TestMiddleware_Response(t *testing.T) {
 	const key = "secret"
 	responseBody := `{"id":"cpu","type":"gauge","value":1.5}`
@@ -185,4 +207,67 @@ func TestMiddleware_BodyAvailableAfterCheck(t *testing.T) {
 	if !bytes.Equal(receivedBody, body) {
 		t.Fatalf("хендлер получил тело %q, ожидается %q", receivedBody, body)
 	}
+}
+
+func echoBody(w http.ResponseWriter, r *http.Request) {
+	w.WriteHeader(http.StatusOK)
+	_, _ = io.Copy(w, r.Body)
+}
+
+func TestMiddleware_Concurrent(t *testing.T) {
+	const key = "secret"
+	h := Middleware(key, zap.NewNop())(http.HandlerFunc(echoBody))
+
+	var wg sync.WaitGroup
+	for g := range 64 {
+		wg.Go(func() {
+			body := fmt.Appendf(nil, `{"id":"m%d","type":"gauge","value":%d}`, g, g)
+			want := computeHMAC([]byte(key), body)
+
+			req := httptest.NewRequest(http.MethodPost, "/updates/", bytes.NewReader(body))
+			req.Header.Set(header, want)
+			rr := httptest.NewRecorder()
+			h.ServeHTTP(rr, req)
+
+			if rr.Code != http.StatusOK {
+				t.Errorf("горутина %d: статус = %d, ожидается 200", g, rr.Code)
+				return
+			}
+			if !bytes.Equal(rr.Body.Bytes(), body) {
+				t.Errorf("горутина %d: тело ответа %q, ожидается %q", g, rr.Body.Bytes(), body)
+			}
+			if got := rr.Header().Get(header); got != want {
+				t.Errorf("горутина %d: HashSHA256 = %q, ожидается %q", g, got, want)
+			}
+		})
+	}
+	wg.Wait()
+}
+
+func BenchmarkMiddleware(b *testing.B) {
+	body := bytes.Repeat([]byte(`{"id":"Alloc","type":"gauge","value":2457600},`), 40)
+	hash := computeHMAC([]byte("secret"), body)
+
+	run := func(b *testing.B, key string) {
+		h := Middleware(key, zap.NewNop())(http.HandlerFunc(echoBody))
+		rd := bytes.NewReader(body)
+		req := httptest.NewRequest(http.MethodPost, "/updates/", rd)
+		req.Header.Set(header, hash)
+		// reqbody.Read подменяет r.Body, возвращаем исходное тело
+		reqBody := req.Body
+
+		b.ReportAllocs()
+		for b.Loop() {
+			rd.Reset(body)
+			req.Body = reqBody
+			rr := httptest.NewRecorder()
+			h.ServeHTTP(rr, req)
+			if rr.Code != http.StatusOK {
+				b.Fatalf("статус = %d, ожидается %d", rr.Code, http.StatusOK)
+			}
+		}
+	}
+
+	b.Run("с ключом", func(b *testing.B) { run(b, "secret") })
+	b.Run("без ключа", func(b *testing.B) { run(b, "") })
 }

@@ -6,12 +6,14 @@ import (
 	"crypto/hmac"
 	"crypto/sha256"
 	"encoding/hex"
+	"encoding/json"
 	"fmt"
 	"io"
 	"net/http"
 	"net/http/httptest"
 	"runtime"
 	"strings"
+	"sync"
 	"sync/atomic"
 	"testing"
 	"time"
@@ -241,5 +243,125 @@ func TestNew(t *testing.T) {
 	}
 	if got.Client == nil {
 		t.Fatal("клиент равен nil")
+	}
+}
+
+func TestAgent_BuildBatch(t *testing.T) {
+	st := storage.NewMemStorage()
+	ctx := t.Context()
+	g1, g2 := 1.5, 2.5
+	st.SetGauge(ctx, "g1", &g1)
+	st.SetGauge(ctx, "g2", &g2)
+	st.SetGauge(ctx, "nil", nil)
+	delta := int64(7)
+	st.AddCounter(ctx, "PollCount", &delta)
+
+	a := &Agent{Storage: st}
+	batch := a.buildBatch(ctx)
+
+	if len(batch) != 3 {
+		t.Fatalf("len(batch) = %d, ожидается 3 (nil-значение пропускается)", len(batch))
+	}
+	for _, m := range batch {
+		if m.ID == "nil" {
+			t.Fatal("метрика с nil-значением попала в батч")
+		}
+	}
+}
+
+func TestAgent_SendMetrics_Reuse(t *testing.T) {
+	var received atomic.Int64
+	ts := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		zr, err := gzip.NewReader(r.Body)
+		if err != nil {
+			t.Errorf("gzip.NewReader() ошибка = %v", err)
+			w.WriteHeader(http.StatusBadRequest)
+			return
+		}
+		defer zr.Close()
+		var items []metrics.Metrics
+		if err := json.NewDecoder(zr).Decode(&items); err != nil {
+			t.Errorf("json.Decode() ошибка = %v", err)
+			w.WriteHeader(http.StatusBadRequest)
+			return
+		}
+		received.Add(int64(len(items)))
+		w.WriteHeader(http.StatusOK)
+	}))
+	defer ts.Close()
+
+	a := &Agent{
+		Storage: storage.NewMemStorage(),
+		Client:  resty.NewWithClient(ts.Client()),
+		Config:  config.Config{Address: config.Address(ts.URL), Key: "secret"},
+	}
+
+	items := make([]metrics.Metrics, 3)
+	for i := range items {
+		v := float64(i)
+		items[i] = metrics.Metrics{ID: fmt.Sprintf("g%d", i), MType: metrics.Gauge, Value: &v}
+	}
+
+	const goroutines, sends = 8, 5
+	var wg sync.WaitGroup
+	for g := range goroutines {
+		wg.Go(func() {
+			for range sends {
+				if err := a.sendMetrics(t.Context(), items); err != nil {
+					t.Errorf("горутина %d: sendMetrics() ошибка = %v", g, err)
+					return
+				}
+			}
+		})
+	}
+	wg.Wait()
+
+	want := int64(goroutines * sends * len(items))
+	if got := received.Load(); got != want {
+		t.Fatalf("сервер принял %d метрик, ожидается %d", got, want)
+	}
+}
+
+func BenchmarkAgent_CollectMetrics(b *testing.B) {
+	a := &Agent{Storage: storage.NewMemStorage()}
+
+	b.ReportAllocs()
+	for b.Loop() {
+		a.CollectMetrics()
+	}
+}
+
+func BenchmarkAgent_BuildBatch(b *testing.B) {
+	a := &Agent{Storage: storage.NewMemStorage()}
+	a.CollectMetrics()
+	ctx := context.Background()
+
+	b.ReportAllocs()
+	for b.Loop() {
+		a.buildBatch(ctx)
+	}
+}
+
+func BenchmarkAgent_SendMetrics(b *testing.B) {
+	ts := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		_, _ = io.Copy(io.Discard, r.Body)
+		w.WriteHeader(http.StatusOK)
+	}))
+	defer ts.Close()
+
+	a := &Agent{
+		Storage: storage.NewMemStorage(),
+		Client:  resty.NewWithClient(ts.Client()),
+		Config:  config.Config{Address: config.Address(ts.URL), Key: "secret"},
+	}
+	a.CollectMetrics()
+	ctx := context.Background()
+	items := a.buildBatch(ctx)
+
+	b.ReportAllocs()
+	for b.Loop() {
+		if err := a.sendMetrics(ctx, items); err != nil {
+			b.Fatalf("sendMetrics() ошибка = %v", err)
+		}
 	}
 }

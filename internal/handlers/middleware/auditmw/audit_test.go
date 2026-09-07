@@ -4,7 +4,6 @@ import (
 	"bytes"
 	"compress/gzip"
 	"encoding/json"
-	"errors"
 	"net/http"
 	"net/http/httptest"
 	"slices"
@@ -264,28 +263,4 @@ func TestNamesFromBody(t *testing.T) {
 			}
 		})
 	}
-}
-
-type brokenBody struct{}
-
-func (brokenBody) Read([]byte) (int, error) { return 0, errors.New("поток повреждён") }
-func (brokenBody) Close() error             { return nil }
-
-func TestReadBody(t *testing.T) {
-	t.Run("превышение лимита даёт 413", func(t *testing.T) {
-		body := strings.Repeat("a", maxBodySize+1)
-		req := httptest.NewRequest(http.MethodPost, "/updates/", strings.NewReader(body))
-		rr := httptest.NewRecorder()
-		if _, ok := readBody(rr, req); ok || rr.Code != http.StatusRequestEntityTooLarge {
-			t.Fatalf("ok = %v, статус = %d; ожидается false, %d", ok, rr.Code, http.StatusRequestEntityTooLarge)
-		}
-	})
-
-	t.Run("повреждённое тело даёт 400", func(t *testing.T) {
-		req := httptest.NewRequest(http.MethodPost, "/updates/", brokenBody{})
-		rr := httptest.NewRecorder()
-		if _, ok := readBody(rr, req); ok || rr.Code != http.StatusBadRequest {
-			t.Fatalf("ok = %v, статус = %d; ожидается false, %d", ok, rr.Code, http.StatusBadRequest)
-		}
-	})
 }

@@ -12,6 +12,8 @@ type Storage interface {
 	AddCounter(ctx context.Context, name string, delta metrics.CounterValue)
 	GetGauges(ctx context.Context) Gauges
 	GetCounters(ctx context.Context) Counters
+	GetGauge(ctx context.Context, name string) metrics.GaugeValue
+	GetCounter(ctx context.Context, name string) metrics.CounterValue
 }
 
 type (
@@ -87,4 +89,22 @@ func (ms *MemStorage) GetCounters(_ context.Context) Counters {
 		counters[k] = &vv
 	}
 	return counters
+}
+
+func (ms *MemStorage) GetGauge(_ context.Context, name string) metrics.GaugeValue {
+	ms.mu.RLock()
+	defer ms.mu.RUnlock()
+	return ms.gauges[name]
+}
+
+// GetCounter отдаёт копию: AddCounter меняет значение по указателю на месте
+func (ms *MemStorage) GetCounter(_ context.Context, name string) metrics.CounterValue {
+	ms.mu.RLock()
+	defer ms.mu.RUnlock()
+	v := ms.counters[name]
+	if v == nil {
+		return nil
+	}
+	vv := *v
+	return &vv
 }

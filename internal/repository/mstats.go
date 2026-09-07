@@ -12,7 +12,7 @@ type MemStats struct {
 	RandomValue metrics.CounterValue
 }
 
-func (ms MemStats) GetGauges() map[string]float64 {
+func (ms *MemStats) GetGauges() map[string]float64 {
 	return map[string]float64{
 		"Alloc":         float64(ms.Alloc),
 		"BuckHashSys":   float64(ms.BuckHashSys),

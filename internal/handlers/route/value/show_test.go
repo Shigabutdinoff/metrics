@@ -4,6 +4,7 @@ import (
 	"bytes"
 	"context"
 	"encoding/json"
+	"fmt"
 	"net/http"
 	"net/http/httptest"
 	"testing"
@@ -220,4 +221,54 @@ func equalInt64Ptr(a, b *int64) bool {
 		return a == b
 	}
 	return *a == *b
+}
+
+func fillStorage(st *storage.MemStorage, n int) {
+	ctx := context.Background()
+	for i := range n {
+		st.SetGauge(ctx, fmt.Sprintf("Gauge%02d", i), float64Ptr(float64(i)+0.5))
+	}
+	st.AddCounter(ctx, "PollCount", int64Ptr(42))
+}
+
+func BenchmarkShowTextPlain(b *testing.B) {
+	st := storage.NewMemStorage()
+	fillStorage(st, 45)
+	r := chi.NewRouter()
+	r.Get("/value/{type}/{name}", ShowTextPlain(st))
+
+	run := func(b *testing.B, path string) {
+		req := httptest.NewRequest(http.MethodGet, path, nil)
+		b.ReportAllocs()
+		for b.Loop() {
+			rr := httptest.NewRecorder()
+			r.ServeHTTP(rr, req)
+			if rr.Code != http.StatusOK {
+				b.Fatalf("статус = %d, ожидается %d", rr.Code, http.StatusOK)
+			}
+		}
+	}
+
+	b.Run("gauge", func(b *testing.B) { run(b, "/value/gauge/Gauge10") })
+	b.Run("counter", func(b *testing.B) { run(b, "/value/counter/PollCount") })
+}
+
+func BenchmarkShowApplicationJSON(b *testing.B) {
+	st := storage.NewMemStorage()
+	fillStorage(st, 45)
+	h := ShowApplicationJSON(st)
+	body := []byte(`{"id":"Gauge10","type":"gauge"}`)
+	rd := bytes.NewReader(body)
+	req := httptest.NewRequest(http.MethodPost, "/value/", rd)
+	req.Header.Set("Content-Type", "application/json")
+
+	b.ReportAllocs()
+	for b.Loop() {
+		rd.Reset(body)
+		rr := httptest.NewRecorder()
+		h.ServeHTTP(rr, req)
+		if rr.Code != http.StatusOK {
+			b.Fatalf("статус = %d, ожидается %d", rr.Code, http.StatusOK)
+		}
+	}
 }

@@ -18,6 +18,7 @@ var (
 	key             = flag.String("k", server.DefaultKey, "Секретный ключ для подписи")
 	auditFile       = flag.String("audit-file", server.DefaultAuditFile, "Путь к файлу логов аудита")
 	auditURL        = flag.String("audit-url", server.DefaultAuditURL, "URL приёмника логов аудита")
+	pprofAddress    = flag.String("pprof-address", server.DefaultPprofAddress, "Адрес pprof, пусто выключает")
 )
 
 func init() {
@@ -50,6 +51,7 @@ func main() {
 	s.Key = *key
 	s.AuditFile = *auditFile
 	s.AuditURL = *auditURL
+	s.PprofAddress = *pprofAddress
 
 	err = env.Parse(s)
 	if err != nil {

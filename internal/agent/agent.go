@@ -9,9 +9,11 @@ import (
 	"encoding/hex"
 	"encoding/json"
 	"fmt"
+	"io"
 	"math/rand"
 	"net/http"
 	"runtime"
+	"sync"
 	"time"
 
 	"github.com/go-resty/resty/v2"
@@ -31,6 +33,9 @@ type Agent struct {
 	Logger         *zap.Logger
 	agent.Config
 }
+
+// gzip.Writer аллоцирует ~800 KiB, поэтому воркеры делят пул
+var gzipWriters = sync.Pool{New: func() any { return gzip.NewWriter(io.Discard) }}
 
 func newClient() *resty.Client {
 	c := resty.New().SetTimeout(10 * time.Second)
@@ -169,14 +174,16 @@ func (a *Agent) CollectMetrics() {
 
 // buildBatch собирает текущий снимок накопленных метрик из хранилища
 func (a *Agent) buildBatch(ctx context.Context) []metrics.Metrics {
-	var batch []metrics.Metrics
-	for name, value := range a.Storage.GetGauges(ctx) {
+	gauges := a.Storage.GetGauges(ctx)
+	counters := a.Storage.GetCounters(ctx)
+	batch := make([]metrics.Metrics, 0, len(gauges)+len(counters))
+	for name, value := range gauges {
 		if value == nil {
 			continue
 		}
 		batch = append(batch, metrics.Metrics{ID: name, MType: metrics.Gauge, Value: value})
 	}
-	for name, value := range a.Storage.GetCounters(ctx) {
+	for name, value := range counters {
 		if value == nil {
 			continue
 		}
@@ -199,7 +206,13 @@ func (a *Agent) sendMetrics(ctx context.Context, items []metrics.Metrics) error 
 	}
 
 	var compressedBody bytes.Buffer
-	zw := gzip.NewWriter(&compressedBody)
+	zw := gzipWriters.Get().(*gzip.Writer)
+	zw.Reset(&compressedBody)
+	defer func() {
+		// не держим буфер батча в пуле
+		zw.Reset(io.Discard)
+		gzipWriters.Put(zw)
+	}()
 	if _, err := zw.Write(body); err != nil {
 		return err
 	}
@@ -207,8 +220,7 @@ func (a *Agent) sendMetrics(ctx context.Context, items []metrics.Metrics) error 
 		return err
 	}
 
-	baseURL := a.Address
-	path := fmt.Sprintf("%s/updates/", baseURL)
+	path := string(a.Address) + "/updates/"
 
 	req := a.Client.R().
 		SetContext(ctx).

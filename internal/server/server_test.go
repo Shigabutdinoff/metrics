@@ -4,6 +4,11 @@ import (
 	"bytes"
 	"compress/gzip"
 	"context"
+	"crypto/hmac"
+	"crypto/sha256"
+	"encoding/hex"
+	"encoding/json"
+	"fmt"
 	"io"
 	"net/http"
 	"net/http/httptest"
@@ -13,6 +18,7 @@ import (
 
 	"github.com/go-chi/chi/v5"
 	"github.com/shigabutdinoff/metrics/internal/handlers/middleware/compress"
+	"github.com/shigabutdinoff/metrics/internal/model/metrics"
 	"github.com/shigabutdinoff/metrics/internal/storage"
 	"github.com/stretchr/testify/require"
 	"go.uber.org/zap"
@@ -178,6 +184,131 @@ func TestGzipCompression(t *testing.T) {
 		require.NoError(t, err)
 
 		require.JSONEq(t, successBody, string(b))
+	})
+}
+
+func TestProfiler(t *testing.T) {
+	s := New(storage.NewMemStorage(), zap.NewNop())
+	s.setupRoutes()
+
+	// pprof живёт на отдельном listener, на публичном роутере его нет
+	req := httptest.NewRequest(http.MethodGet, "/debug/pprof/", nil)
+	rr := httptest.NewRecorder()
+	s.Router.ServeHTTP(rr, req)
+
+	require.Equal(t, http.StatusNotFound, rr.Code)
+
+	h := pprofHandler()
+	for _, path := range []string{"/debug/pprof/", "/debug/pprof/cmdline"} {
+		req := httptest.NewRequest(http.MethodGet, path, nil)
+		rr := httptest.NewRecorder()
+		h.ServeHTTP(rr, req)
+
+		require.Equalf(t, http.StatusOK, rr.Code, "GET %s", path)
+		require.NotEmptyf(t, rr.Body.Bytes(), "GET %s: пустое тело", path)
+	}
+}
+
+func sampleBatch() []metrics.Metrics {
+	batch := make([]metrics.Metrics, 0, 31)
+	for i := range 30 {
+		v := float64(i*1000) + 0.5
+		batch = append(batch, metrics.Metrics{ID: fmt.Sprintf("Gauge%02d", i), MType: metrics.Gauge, Value: &v})
+	}
+	delta := int64(42)
+	return append(batch, metrics.Metrics{ID: "PollCount", MType: metrics.Counter, Delta: &delta})
+}
+
+func gzipBytes(p []byte) []byte {
+	var buf bytes.Buffer
+	zw := gzip.NewWriter(&buf)
+	if _, err := zw.Write(p); err != nil {
+		panic(err)
+	}
+	if err := zw.Close(); err != nil {
+		panic(err)
+	}
+	return buf.Bytes()
+}
+
+func computeHMAC(key, data []byte) string {
+	mac := hmac.New(sha256.New, key)
+	mac.Write(data)
+	return hex.EncodeToString(mac.Sum(nil))
+}
+
+func updatesRequest(gz io.Reader, hash string) *http.Request {
+	req := httptest.NewRequest(http.MethodPost, "/updates/", gz)
+	req.Header.Set("Content-Type", "application/json")
+	req.Header.Set("Content-Encoding", "gzip")
+	req.Header.Set("Accept-Encoding", "gzip")
+	req.Header.Set("HashSHA256", hash)
+	return req
+}
+
+func newServer(key string) *Server {
+	s := New(storage.NewMemStorage(), zap.NewNop())
+	s.Key = key
+	s.setupRoutes()
+	return s
+}
+
+func BenchmarkRouter_Updates(b *testing.B) {
+	body, err := json.Marshal(sampleBatch())
+	require.NoError(b, err)
+	gz := gzipBytes(body)
+	hash := computeHMAC([]byte("secret"), body)
+
+	b.Run("gzip+hash", func(b *testing.B) {
+		s := newServer("secret")
+		rd := bytes.NewReader(gz)
+		req := updatesRequest(rd, hash)
+
+		b.ReportAllocs()
+		for b.Loop() {
+			rd.Reset(gz)
+			rr := httptest.NewRecorder()
+			s.Router.ServeHTTP(rr, req)
+			if rr.Code != http.StatusOK {
+				b.Fatalf("статус = %d, ожидается %d", rr.Code, http.StatusOK)
+			}
+		}
+	})
+
+	b.Run("gzip+hash parallel", func(b *testing.B) {
+		s := newServer("secret")
+
+		b.ReportAllocs()
+		b.RunParallel(func(pb *testing.PB) {
+			rd := bytes.NewReader(gz)
+			req := updatesRequest(rd, hash)
+			for pb.Next() {
+				rd.Reset(gz)
+				rr := httptest.NewRecorder()
+				s.Router.ServeHTTP(rr, req)
+				if rr.Code != http.StatusOK {
+					b.Errorf("статус = %d, ожидается %d", rr.Code, http.StatusOK)
+					return
+				}
+			}
+		})
+	})
+
+	b.Run("plain", func(b *testing.B) {
+		s := newServer("")
+		rd := bytes.NewReader(body)
+		req := httptest.NewRequest(http.MethodPost, "/updates/", rd)
+		req.Header.Set("Content-Type", "application/json")
+
+		b.ReportAllocs()
+		for b.Loop() {
+			rd.Reset(body)
+			rr := httptest.NewRecorder()
+			s.Router.ServeHTTP(rr, req)
+			if rr.Code != http.StatusOK {
+				b.Fatalf("статус = %d, ожидается %d", rr.Code, http.StatusOK)
+			}
+		}
 	})
 }
 
