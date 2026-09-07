@@ -1,3 +1,4 @@
+// Package updates содержит хендлер приёма пачки метрик.
 package updates
 
 import (
@@ -11,6 +12,7 @@ import (
 	"github.com/shigabutdinoff/metrics/internal/storage"
 )
 
+// StoreApplicationJSONBatch обрабатывает POST /updates/ с массивом метрик.
 func StoreApplicationJSONBatch(st storage.Storage, logger *zap.Logger) http.HandlerFunc {
 	return func(res http.ResponseWriter, req *http.Request) {
 		var items []metrics.Metrics

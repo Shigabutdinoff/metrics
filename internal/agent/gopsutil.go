@@ -9,7 +9,6 @@ import (
 	"go.uber.org/zap"
 )
 
-// collectGopsutil собирает дополнительные gauge-метрики через пакет gopsutil
 func (a *Agent) collectGopsutil(ctx context.Context) {
 	if vm, err := mem.VirtualMemoryWithContext(ctx); err == nil {
 		total := float64(vm.Total)

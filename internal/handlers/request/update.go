@@ -1,3 +1,4 @@
+// Package request разбирает параметры метрики, заданные в пути запроса.
 package request
 
 import (
@@ -12,11 +13,13 @@ import (
 	"github.com/shigabutdinoff/metrics/internal/model/metrics"
 )
 
+// Update запрос на обновление метрики, параметры которой заданы в пути.
 type Update struct {
 	*http.Request
 	metrics.Metrics
 }
 
+// Validate разбирает параметры пути в metrics.Metrics и даёт HTTP-код.
 func (u *Update) Validate() (int, error) {
 	rawName := chi.URLParam(u.Request, "name")
 	name, err := url.PathUnescape(rawName)

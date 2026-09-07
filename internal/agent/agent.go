@@ -26,16 +26,22 @@ import (
 	"github.com/shigabutdinoff/metrics/internal/storage"
 )
 
+// Agent собирает метрики и отправляет их на сервер.
 type Agent struct {
-	Storage        storage.Storage
-	Client         *resty.Client
-	PollInterval   time.Duration
+	// Storage хранилище собранных метрик.
+	Storage storage.Storage
+	// Client HTTP-клиент с настроенными повторами.
+	Client *resty.Client
+	// PollInterval период снятия метрик из Config.PollIntervalInt64.
+	PollInterval time.Duration
+	// ReportInterval период отправки из Config.ReportIntervalInt64.
 	ReportInterval time.Duration
-	Logger         *zap.Logger
+	// Logger журнал, куда пишутся ошибки сбора и отправки.
+	Logger *zap.Logger
+	// Config конфигурация агента: адрес сервера, интервалы, ключ подписи.
 	agent.Config
 }
 
-// gzip.Writer аллоцирует ~800 KiB, поэтому воркеры делят пул
 var gzipWriters = sync.Pool{New: func() any { return gzip.NewWriter(io.Discard) }}
 
 func newClient() *resty.Client {
@@ -56,6 +62,7 @@ func newClient() *resty.Client {
 	return c
 }
 
+// New создаёт агент с настройками по умолчанию и клиентом с ретраями.
 func New(st storage.Storage, logger *zap.Logger) Agent {
 	return Agent{
 		Storage: st,
@@ -70,7 +77,6 @@ func New(st storage.Storage, logger *zap.Logger) Agent {
 	}
 }
 
-// workerCount возвращает число воркеров пула отправки
 func (a *Agent) workerCount() int {
 	if n := int(a.Config.RateLimitInt64); n >= 1 {
 		return n
@@ -114,7 +120,6 @@ func (a *Agent) Run(ctx context.Context) error {
 	return g.Wait()
 }
 
-// collectLoop вызывает fn сразу и далее каждые d, пока не отменён ctx
 func (a *Agent) collectLoop(ctx context.Context, d time.Duration, fn func()) {
 	fn()
 
@@ -131,7 +136,6 @@ func (a *Agent) collectLoop(ctx context.Context, d time.Duration, fn func()) {
 	}
 }
 
-// reportLoop каждые ReportInterval читает накопленные метрики и отправляет весь батч одним заданием в пул
 func (a *Agent) reportLoop(ctx context.Context, jobs chan<- []metrics.Metrics) {
 	defer close(jobs)
 
@@ -156,6 +160,7 @@ func (a *Agent) reportLoop(ctx context.Context, jobs chan<- []metrics.Metrics) {
 	}
 }
 
+// CollectMetrics снимает метрики runtime, растит PollCount и RandomValue.
 func (a *Agent) CollectMetrics() {
 	var m repository.MemStats
 	runtime.ReadMemStats(&m.MemStats)
@@ -173,7 +178,6 @@ func (a *Agent) CollectMetrics() {
 	a.Storage.SetGauge(ctx, "RandomValue", &randomValue)
 }
 
-// buildBatch собирает текущий снимок накопленных метрик из хранилища
 func (a *Agent) buildBatch(ctx context.Context) []metrics.Metrics {
 	gauges := a.Storage.GetGauges(ctx)
 	counters := a.Storage.GetCounters(ctx)
@@ -210,7 +214,6 @@ func (a *Agent) sendMetrics(ctx context.Context, items []metrics.Metrics) error 
 	zw := gzipWriters.Get().(*gzip.Writer)
 	zw.Reset(&compressedBody)
 	defer func() {
-		// не держим буфер батча в пуле
 		zw.Reset(io.Discard)
 		gzipWriters.Put(zw)
 	}()

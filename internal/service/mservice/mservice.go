@@ -1,3 +1,4 @@
+// Package mservice переносит метрики из оперативного хранилища в постоянное.
 package mservice
 
 import (
@@ -7,6 +8,7 @@ import (
 	"github.com/shigabutdinoff/metrics/internal/storage"
 )
 
+// Upsert выгружает все метрики из st и записывает их в repo одной пачкой.
 func Upsert(ctx context.Context, repo repository.Repository, st storage.Storage) error {
 	gauges := st.GetGauges(ctx)
 	counters := st.GetCounters(ctx)

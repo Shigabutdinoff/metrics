@@ -32,37 +32,62 @@ import (
 	"github.com/shigabutdinoff/metrics/internal/storage"
 )
 
+// Значения полей Server по умолчанию.
 const (
-	DefaultAddress         = "localhost:8080"
-	DefaultStoreInterval   = 300
+	// DefaultAddress сервер слушает локальный порт 8080.
+	DefaultAddress = "localhost:8080"
+	// DefaultStoreInterval метрики сохраняются раз в пять минут.
+	DefaultStoreInterval = 300
+	// DefaultFileStoragePath сохранение в файл выключено.
 	DefaultFileStoragePath = ""
-	DefaultRestore         = true
-	DefaultDatabaseDSN     = ""
-	DefaultKey             = ""
-	DefaultAuditFile       = ""
-	DefaultAuditURL        = ""
-	DefaultPprofAddress    = ""
+	// DefaultRestore метрики восстанавливаются из файла при старте.
+	DefaultRestore = true
+	// DefaultDatabaseDSN работа с PostgreSQL выключена.
+	DefaultDatabaseDSN = ""
+	// DefaultKey проверка и выдача подписи выключены.
+	DefaultKey = ""
+	// DefaultAuditFile аудит в файл выключен.
+	DefaultAuditFile = ""
+	// DefaultAuditURL аудит по HTTP выключен.
+	DefaultAuditURL = ""
+	// DefaultPprofAddress сервер pprof выключен.
+	DefaultPprofAddress = ""
 )
 
+// Server HTTP-сервер метрик, поля с тегом env читаются из окружения.
 type Server struct {
-	Storage         storage.Storage
-	Address         string `env:"ADDRESS"`
-	Router          *chi.Mux
-	Logger          *zap.Logger
-	StoreInterval   int    `env:"STORE_INTERVAL"`
+	// Storage хранилище метрик.
+	Storage storage.Storage
+	// Address адрес, на котором сервер слушает HTTP, флаг -a.
+	Address string `env:"ADDRESS"`
+	// Router маршрутизатор, собирается при вызове Run.
+	Router *chi.Mux
+	// Logger журнал, куда пишутся запросы и ошибки.
+	Logger *zap.Logger
+	// StoreInterval период сохранения в файл в секундах, флаг -i, 0 синхронно.
+	StoreInterval int `env:"STORE_INTERVAL"`
+	// FileStoragePath путь к файлу с метриками, флаг -f.
 	FileStoragePath string `env:"FILE_STORAGE_PATH"`
-	Restore         bool   `env:"RESTORE"`
-	DatabaseDSN     string `env:"DATABASE_DSN"`
-	Key             string `env:"KEY"`
-	AuditFile       string `env:"AUDIT_FILE"`
-	AuditURL        string `env:"AUDIT_URL"`
-	PprofAddress    string `env:"PPROF_ADDRESS"`
-	auditor         *audit.Publisher
-	auditClosers    []io.Closer
-	onChange        func()
-	Database        *sql.DB
+	// Restore восстанавливать ли метрики из файла при старте, флаг -r.
+	Restore bool `env:"RESTORE"`
+	// DatabaseDSN строка подключения к PostgreSQL, флаг -d.
+	DatabaseDSN string `env:"DATABASE_DSN"`
+	// Key ключ подписи HMAC-SHA256, флаг -k.
+	Key string `env:"KEY"`
+	// AuditFile путь к файлу аудита, флаг -audit-file.
+	AuditFile string `env:"AUDIT_FILE"`
+	// AuditURL адрес приёмника аудита, флаг -audit-url.
+	AuditURL string `env:"AUDIT_URL"`
+	// PprofAddress адрес отдельного сервера pprof, флаг -pprof-address.
+	PprofAddress string `env:"PPROF_ADDRESS"`
+	auditor      *audit.Publisher
+	auditClosers []io.Closer
+	onChange     func()
+	// Database соединение с PostgreSQL, открывается при непустом DatabaseDSN.
+	Database *sql.DB
 }
 
+// New создаёт сервер с настройками по умолчанию, роутер собирает Run.
 func New(st storage.Storage, logger *zap.Logger) *Server {
 	s := &Server{
 		Storage:         st,
@@ -81,7 +106,6 @@ func New(st storage.Storage, logger *zap.Logger) *Server {
 	return s
 }
 
-// setupRoutes собирает HTTP-роутер
 func (s *Server) setupRoutes() {
 	r := chi.NewRouter()
 	r.Use(logging.WithLogging(s.Logger))
@@ -117,6 +141,7 @@ func (s *Server) setupRoutes() {
 	s.Router = r
 }
 
+// Run настраивает сервер и блокируется на обслуживании запросов.
 func (s *Server) Run() {
 	s.setupAudit()
 	defer s.closeAudit()
@@ -139,7 +164,6 @@ func (s *Server) Run() {
 	s.configurePersistence(ps)
 
 	if s.PprofAddress != "" {
-		// WriteTimeout ограничивает ?seconds= у pprof-обработчиков
 		pprof := &http.Server{
 			Addr:              s.PprofAddress,
 			Handler:           pprofHandler(),

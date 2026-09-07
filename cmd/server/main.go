@@ -1,3 +1,16 @@
+// Команда server принимает и хранит метрики.
+//
+// Параметры задаются флагами и переменными окружения:
+//
+//	-a, -address            адрес, на котором сервер слушает HTTP
+//	-i, -store-interval     период сохранения метрик в файл в секундах
+//	-f, -file-storage-path  путь к файлу с метриками
+//	-r, -restore            восстанавливать ли метрики из файла при старте
+//	-d, -database-dsn       строка подключения к PostgreSQL
+//	-k, -key                ключ подписи HMAC-SHA256
+//	-audit-file             путь к файлу аудита
+//	-audit-url              адрес приёмника аудита
+//	-pprof-address          адрес сервера pprof, пустой отключает его
 package main
 
 import (
@@ -34,10 +47,8 @@ func init() {
 func main() {
 	flag.Parse()
 
-	// создаём предустановленный регистратор zap
 	logger, err := zap.NewDevelopment()
 	if err != nil {
-		// вызываем панику, если ошибка
 		panic(err)
 	}
 	defer func() { _ = logger.Sync() }()

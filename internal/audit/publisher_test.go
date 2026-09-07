@@ -72,7 +72,6 @@ func TestNewPublisherOptions(t *testing.T) {
 }
 
 func TestPublisherFanOut(t *testing.T) {
-	// ошибка одного приёмника не должна мешать доставке остальным
 	first := &fakeObserver{err: errors.New("приёмник недоступен")}
 	second := &fakeObserver{}
 	p := newTestPublisher(nil, first, second)

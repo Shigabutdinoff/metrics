@@ -152,7 +152,6 @@ func TestGzipMiddleware_Reuse(t *testing.T) {
 		bodies[i] = bytes.Repeat([]byte(fmt.Sprintf(`{"n":%d}`, i)), i*40+1)
 	}
 
-	// после ошибки Reset объекты пула должны остаться пригодными
 	req := httptest.NewRequest(http.MethodPost, "/updates/", strings.NewReader("not gzip"))
 	req.Header.Set("Content-Encoding", "gzip")
 	req.Header.Set("Accept-Encoding", "gzip")

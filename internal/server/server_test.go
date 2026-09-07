@@ -28,10 +28,8 @@ import (
 func TestNew(t *testing.T) {
 	st := storage.NewMemStorage()
 
-	// создаём предустановленный регистратор zap
 	logger, err := zap.NewDevelopment()
 	if err != nil {
-		// вызываем панику, если ошибка
 		panic(err)
 	}
 	defer logger.Sync()
@@ -49,7 +47,6 @@ func TestNew(t *testing.T) {
 		t.Fatalf("setupRoutes() роутер равен nil")
 	}
 
-	// Smoke-test маршрутов и обработчиков.
 	t.Run("GET /", func(t *testing.T) {
 		req := httptest.NewRequest(http.MethodGet, "/", nil)
 		rr := httptest.NewRecorder()
@@ -108,8 +105,6 @@ func TestServer_Run(t *testing.T) {
 	})
 }
 
-// ...
-
 func TestGzipCompression(t *testing.T) {
 	requestBody := `{
         "request": {
@@ -119,7 +114,6 @@ func TestGzipCompression(t *testing.T) {
         "version": "1.0"
     }`
 
-	// ожидаемое содержимое тела ответа при успешном запросе
 	successBody := `{
         "response": {
             "text": "Извините, я пока ничего не умею"
@@ -192,7 +186,6 @@ func TestProfiler(t *testing.T) {
 	s := New(storage.NewMemStorage(), zap.NewNop())
 	s.setupRoutes()
 
-	// pprof живёт на отдельном listener, на публичном роутере его нет
 	req := httptest.NewRequest(http.MethodGet, "/debug/pprof/", nil)
 	rr := httptest.NewRecorder()
 	s.Router.ServeHTTP(rr, req)

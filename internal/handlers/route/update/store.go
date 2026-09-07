@@ -1,3 +1,4 @@
+// Package update содержит хендлеры приёма одной метрики.
 package update
 
 import (
@@ -10,6 +11,7 @@ import (
 	"github.com/shigabutdinoff/metrics/internal/storage"
 )
 
+// StoreTextPlain обрабатывает POST /update/{type}/{name}/{value}.
 func StoreTextPlain(st storage.Storage) http.HandlerFunc {
 	return func(res http.ResponseWriter, req *http.Request) {
 		upd := &request.Update{Request: req}
@@ -34,6 +36,7 @@ func StoreTextPlain(st storage.Storage) http.HandlerFunc {
 	}
 }
 
+// StoreApplicationJSON обрабатывает POST /update/ и отдаёт присланное.
 func StoreApplicationJSON(st storage.Storage) http.HandlerFunc {
 	return func(res http.ResponseWriter, req *http.Request) {
 		var upd metrics.Metrics

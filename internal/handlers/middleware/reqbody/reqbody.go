@@ -1,3 +1,4 @@
+// Package reqbody читает тело запроса с лимитом и позволяет перечитать.
 package reqbody
 
 import (
@@ -18,7 +19,6 @@ func (*body) Close() error { return nil }
 
 // Read читает тело с лимитом 10 МБ и возвращает его же в r.Body.
 func Read(w http.ResponseWriter, r *http.Request) ([]byte, bool) {
-	// повторный вызов из следующего middleware отдаёт уже прочитанное тело
 	if b, ok := r.Body.(*body); ok {
 		b.Reset(b.data)
 		return b.data, true

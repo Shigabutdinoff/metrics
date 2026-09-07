@@ -1,3 +1,4 @@
+// Package logging пишет в журнал сведения о запросах и ответах сервера.
 package logging
 
 import (
@@ -8,34 +9,29 @@ import (
 )
 
 type (
-	// берём структуру для хранения сведений об ответе
 	responseData struct {
 		status int
 		size   int
 	}
 
-	// добавляем реализацию http.ResponseWriter
 	loggingResponseWriter struct {
-		http.ResponseWriter // встраиваем оригинальный http.ResponseWriter
-		responseData        *responseData
+		http.ResponseWriter
+		responseData *responseData
 	}
 )
 
 func (r *loggingResponseWriter) Write(b []byte) (int, error) {
-	// записываем ответ, используя оригинальный http.ResponseWriter
 	size, err := r.ResponseWriter.Write(b)
-	r.responseData.size += size // захватываем размер
+	r.responseData.size += size
 	return size, err
 }
 
 func (r *loggingResponseWriter) WriteHeader(statusCode int) {
-	// записываем код статуса, используя оригинальный http.ResponseWriter
 	r.ResponseWriter.WriteHeader(statusCode)
-	r.responseData.status = statusCode // захватываем код статуса
+	r.responseData.status = statusCode
 }
 
-// WithLogging добавляет дополнительный код для регистрации сведений о запросе
-// и возвращает новый http.Handler.
+// WithLogging пишет в журнал сведения о запросе и ответе.
 func WithLogging(logger *zap.Logger) func(http.Handler) http.Handler {
 	return func(next http.Handler) http.Handler {
 		logFn := func(w http.ResponseWriter, r *http.Request) {
@@ -46,10 +42,10 @@ func WithLogging(logger *zap.Logger) func(http.Handler) http.Handler {
 				size:   0,
 			}
 			lw := loggingResponseWriter{
-				ResponseWriter: w, // встраиваем оригинальный http.ResponseWriter
+				ResponseWriter: w,
 				responseData:   responseData,
 			}
-			next.ServeHTTP(&lw, r) // внедряем реализацию http.ResponseWriter
+			next.ServeHTTP(&lw, r)
 
 			duration := time.Since(start)
 
@@ -57,9 +53,9 @@ func WithLogging(logger *zap.Logger) func(http.Handler) http.Handler {
 				"Сведения о запросе",
 				zap.String("uri", r.RequestURI),
 				zap.String("method", r.Method),
-				zap.Int("status", responseData.status), // получаем перехваченный код статуса ответа
+				zap.Int("status", responseData.status),
 				zap.Duration("duration", duration),
-				zap.Int("size", responseData.size), // получаем перехваченный размер ответа
+				zap.Int("size", responseData.size),
 			)
 		}
 		return http.HandlerFunc(logFn)

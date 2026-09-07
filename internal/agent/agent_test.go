@@ -66,7 +66,6 @@ func TestAgent_SendMetrics_Hash(t *testing.T) {
 			var gotHeader string
 			var hashMatched bool
 			ts := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
-				// агент шлёт gzip - распаковываем, чтобы проверить хэш несжатого тела
 				zr, err := gzip.NewReader(r.Body)
 				if err != nil {
 					t.Errorf("gzip.NewReader() ошибка = %v", err)

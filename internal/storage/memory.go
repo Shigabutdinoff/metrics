@@ -1,3 +1,4 @@
+// Package storage хранит метрики сервера и описывает контракт хранилища.
 package storage
 
 import (
@@ -7,26 +8,37 @@ import (
 	"github.com/shigabutdinoff/metrics/internal/model/metrics"
 )
 
+// Storage контракт хранилища метрик.
 type Storage interface {
+	// SetGauge перезаписывает значение gauge-метрики.
 	SetGauge(ctx context.Context, name string, value metrics.GaugeValue)
+	// AddCounter прибавляет дельту к counter-метрике.
 	AddCounter(ctx context.Context, name string, delta metrics.CounterValue)
+	// GetGauges отдаёт копию всех gauge-метрик.
 	GetGauges(ctx context.Context) Gauges
+	// GetCounters отдаёт копию всех counter-метрик.
 	GetCounters(ctx context.Context) Counters
+	// GetGauge отдаёт значение gauge-метрики или nil, если её нет.
 	GetGauge(ctx context.Context, name string) metrics.GaugeValue
+	// GetCounter отдаёт значение counter-метрики или nil, если её нет.
 	GetCounter(ctx context.Context, name string) metrics.CounterValue
 }
 
 type (
-	Gauges   map[string]metrics.GaugeValue
+	// Gauges набор gauge-метрик по именам.
+	Gauges map[string]metrics.GaugeValue
+	// Counters набор counter-метрик по именам.
 	Counters map[string]metrics.CounterValue
 )
 
+// MemStorage потокобезопасное хранилище метрик в памяти.
 type MemStorage struct {
 	mu       sync.RWMutex
 	gauges   Gauges
 	counters Counters
 }
 
+// NewMemStorage создаёт пустое хранилище в памяти.
 func NewMemStorage() *MemStorage {
 	return &MemStorage{
 		gauges:   make(Gauges),
@@ -34,6 +46,7 @@ func NewMemStorage() *MemStorage {
 	}
 }
 
+// SetGauge сохраняет присланный указатель как есть, не копируя значение.
 func (ms *MemStorage) SetGauge(_ context.Context, name string, value metrics.GaugeValue) {
 	ms.mu.Lock()
 	defer ms.mu.Unlock()
@@ -43,6 +56,7 @@ func (ms *MemStorage) SetGauge(_ context.Context, name string, value metrics.Gau
 	ms.gauges[name] = value
 }
 
+// AddCounter меняет уже сохранённое значение по указателю на месте.
 func (ms *MemStorage) AddCounter(_ context.Context, name string, delta metrics.CounterValue) {
 	ms.mu.Lock()
 	defer ms.mu.Unlock()
@@ -60,6 +74,7 @@ func (ms *MemStorage) AddCounter(_ context.Context, name string, delta metrics.C
 	*existing += *delta
 }
 
+// GetGauges копирует карту, но не значения: указатели остаются общими.
 func (ms *MemStorage) GetGauges(_ context.Context) Gauges {
 	ms.mu.RLock()
 	defer ms.mu.RUnlock()
@@ -73,6 +88,7 @@ func (ms *MemStorage) GetGauges(_ context.Context) Gauges {
 	return gauges
 }
 
+// GetCounters копирует и карту, и значения.
 func (ms *MemStorage) GetCounters(_ context.Context) Counters {
 	ms.mu.RLock()
 	defer ms.mu.RUnlock()
@@ -91,6 +107,7 @@ func (ms *MemStorage) GetCounters(_ context.Context) Counters {
 	return counters
 }
 
+// GetGauge отдаёт исходный указатель, а не копию.
 func (ms *MemStorage) GetGauge(_ context.Context, name string) metrics.GaugeValue {
 	ms.mu.RLock()
 	defer ms.mu.RUnlock()

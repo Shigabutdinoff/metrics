@@ -6,12 +6,16 @@ import (
 	"github.com/shigabutdinoff/metrics/internal/model/metrics"
 )
 
+// MemStats снимок метрик runtime вместе со счётчиками агента.
 type MemStats struct {
 	runtime.MemStats
-	PollCount   metrics.CounterValue
+	// PollCount число снятий метрик с момента старта агента.
+	PollCount metrics.CounterValue
+	// RandomValue произвольное значение, обновляемое при каждом снятии.
 	RandomValue metrics.CounterValue
 }
 
+// GetGauges раскладывает снимок runtime по именам gauge-метрик.
 func (ms *MemStats) GetGauges() map[string]float64 {
 	return map[string]float64{
 		"Alloc":         float64(ms.Alloc),

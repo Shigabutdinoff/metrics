@@ -54,7 +54,6 @@ func TestHTTPSinkPostsEvent(t *testing.T) {
 }
 
 func TestHTTPSinkReturnsErrorOnBadStatus(t *testing.T) {
-	// 404 не входит в условия повтора, поэтому ошибка возвращается сразу
 	ts := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, _ *http.Request) {
 		w.WriteHeader(http.StatusNotFound)
 	}))

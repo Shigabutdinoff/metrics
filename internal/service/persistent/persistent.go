@@ -1,3 +1,4 @@
+// Package persistent сохраняет метрики в файл и восстанавливает их оттуда.
 package persistent
 
 import (
@@ -14,16 +15,19 @@ import (
 	"github.com/shigabutdinoff/metrics/internal/storage"
 )
 
+// Service сохраняет метрики хранилища в файл и читает их обратно.
 type Service struct {
 	st   storage.Storage
 	path string
 	log  *zap.Logger
 }
 
+// New создаёт сервис, работающий с файлом по пути path.
 func New(st storage.Storage, path string, log *zap.Logger) *Service {
 	return &Service{st: st, path: path, log: log}
 }
 
+// Save пишет метрики во временный файл и переименовывает его.
 func (s *Service) Save() error {
 	ctx := context.Background()
 	gauges := s.st.GetGauges(ctx)
@@ -66,6 +70,7 @@ func (s *Service) Save() error {
 	return os.Rename(tmp, s.path)
 }
 
+// Load читает метрики из файла, отсутствие файла не ошибка.
 func (s *Service) Load() error {
 	f, err := os.Open(s.path)
 	if err != nil {

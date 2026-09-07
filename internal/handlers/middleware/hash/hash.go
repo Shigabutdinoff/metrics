@@ -1,3 +1,4 @@
+// Package hash проверяет и выставляет подпись в заголовке HashSHA256.
 package hash
 
 import (
@@ -61,7 +62,7 @@ func (rw *responseWriter) flush() error {
 	return err
 }
 
-// Middleware проверяет HashSHA256 входящих запросов и подписывает исходящие ответы.
+// Middleware проверяет подпись запросов и подписывает ответы.
 func Middleware(key string, logger *zap.Logger) func(http.Handler) http.Handler {
 	keyBytes := []byte(key)
 	return func(next http.Handler) http.Handler {

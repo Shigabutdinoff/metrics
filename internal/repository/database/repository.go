@@ -12,14 +12,17 @@ import (
 
 var _ repository.Repository = (*PGRepository)(nil)
 
+// PGRepository хранилище метрик поверх PostgreSQL.
 type PGRepository struct {
 	db *sql.DB
 }
 
+// NewRepository создаёт хранилище поверх открытого соединения с БД.
 func NewRepository(db *sql.DB) *PGRepository {
 	return &PGRepository{db: db}
 }
 
+// BulkUpsert пишет пачку метрик: gauge заменяет, counter суммирует.
 func (r *PGRepository) BulkUpsert(ctx context.Context, gauges storage.Gauges, counters storage.Counters) error {
 	total := len(gauges) + len(counters)
 	if total == 0 {

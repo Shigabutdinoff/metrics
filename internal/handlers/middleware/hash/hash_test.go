@@ -253,7 +253,6 @@ func BenchmarkMiddleware(b *testing.B) {
 		rd := bytes.NewReader(body)
 		req := httptest.NewRequest(http.MethodPost, "/updates/", rd)
 		req.Header.Set(header, hash)
-		// reqbody.Read подменяет r.Body, возвращаем исходное тело
 		reqBody := req.Body
 
 		b.ReportAllocs()

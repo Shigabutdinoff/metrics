@@ -1,3 +1,4 @@
+// Package value содержит хендлеры чтения одной метрики.
 package value
 
 import (
@@ -14,6 +15,7 @@ import (
 	"github.com/shigabutdinoff/metrics/internal/storage"
 )
 
+// ShowTextPlain обрабатывает GET /value/{type}/{name} и отдаёт число.
 func ShowTextPlain(st storage.Storage) http.HandlerFunc {
 	return func(res http.ResponseWriter, req *http.Request) {
 		name, err := url.PathUnescape(chi.URLParam(req, "name"))
@@ -46,6 +48,7 @@ func ShowTextPlain(st storage.Storage) http.HandlerFunc {
 	}
 }
 
+// ShowApplicationJSON обрабатывает POST /value/ и отдаёт значение метрики.
 func ShowApplicationJSON(st storage.Storage) http.HandlerFunc {
 	return func(res http.ResponseWriter, req *http.Request) {
 		var upd metrics.Metrics
