@@ -7,8 +7,9 @@ import (
 	"path/filepath"
 	"testing"
 
-	"github.com/shigabutdinoff/metrics/internal/storage"
 	"go.uber.org/zap"
+
+	"github.com/shigabutdinoff/metrics/internal/storage"
 )
 
 func fillStorage(st *storage.MemStorage, n int) {

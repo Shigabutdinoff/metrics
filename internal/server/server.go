@@ -14,6 +14,8 @@ import (
 	"github.com/golang-migrate/migrate/v4"
 	_ "github.com/golang-migrate/migrate/v4/database/postgres"
 	_ "github.com/golang-migrate/migrate/v4/source/file"
+	"go.uber.org/zap"
+
 	"github.com/shigabutdinoff/metrics/internal/audit"
 	"github.com/shigabutdinoff/metrics/internal/handlers/middleware/auditmw"
 	"github.com/shigabutdinoff/metrics/internal/handlers/middleware/compress"
@@ -28,7 +30,6 @@ import (
 	"github.com/shigabutdinoff/metrics/internal/service/mservice"
 	"github.com/shigabutdinoff/metrics/internal/service/persistent"
 	"github.com/shigabutdinoff/metrics/internal/storage"
-	"go.uber.org/zap"
 )
 
 const (

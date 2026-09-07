@@ -3,8 +3,9 @@ package server
 import (
 	"net/http"
 
-	"github.com/shigabutdinoff/metrics/internal/audit"
 	"go.uber.org/zap"
+
+	"github.com/shigabutdinoff/metrics/internal/audit"
 )
 
 func (s *Server) setupAudit() {

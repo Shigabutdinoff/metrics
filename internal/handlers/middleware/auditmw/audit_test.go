@@ -12,6 +12,8 @@ import (
 	"testing"
 
 	"github.com/go-chi/chi/v5"
+	"go.uber.org/zap"
+
 	"github.com/shigabutdinoff/metrics/internal/audit"
 	"github.com/shigabutdinoff/metrics/internal/handlers/middleware/compress"
 	"github.com/shigabutdinoff/metrics/internal/handlers/middleware/hash"
@@ -19,7 +21,6 @@ import (
 	"github.com/shigabutdinoff/metrics/internal/handlers/route/updates"
 	"github.com/shigabutdinoff/metrics/internal/handlers/route/value"
 	"github.com/shigabutdinoff/metrics/internal/storage"
-	"go.uber.org/zap"
 )
 
 const (

@@ -17,11 +17,12 @@ import (
 	"testing"
 
 	"github.com/go-chi/chi/v5"
+	"github.com/stretchr/testify/require"
+	"go.uber.org/zap"
+
 	"github.com/shigabutdinoff/metrics/internal/handlers/middleware/compress"
 	"github.com/shigabutdinoff/metrics/internal/model/metrics"
 	"github.com/shigabutdinoff/metrics/internal/storage"
-	"github.com/stretchr/testify/require"
-	"go.uber.org/zap"
 )
 
 func TestNew(t *testing.T) {

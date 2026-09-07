@@ -17,12 +17,13 @@ import (
 	"time"
 
 	"github.com/go-resty/resty/v2"
+	"go.uber.org/zap"
+	"golang.org/x/sync/errgroup"
+
 	"github.com/shigabutdinoff/metrics/internal/config/agent"
 	"github.com/shigabutdinoff/metrics/internal/model/metrics"
 	"github.com/shigabutdinoff/metrics/internal/repository"
 	"github.com/shigabutdinoff/metrics/internal/storage"
-	"go.uber.org/zap"
-	"golang.org/x/sync/errgroup"
 )
 
 type Agent struct {

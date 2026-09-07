@@ -10,10 +10,11 @@ import (
 	"time"
 
 	"github.com/caarlos0/env/v11"
+	"go.uber.org/zap"
+
 	"github.com/shigabutdinoff/metrics/internal/agent"
 	config "github.com/shigabutdinoff/metrics/internal/config/agent"
 	"github.com/shigabutdinoff/metrics/internal/storage"
-	"go.uber.org/zap"
 )
 
 var (

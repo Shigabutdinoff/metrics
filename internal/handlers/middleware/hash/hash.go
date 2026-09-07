@@ -8,8 +8,9 @@ import (
 	"net/http"
 	"sync"
 
-	"github.com/shigabutdinoff/metrics/internal/handlers/middleware/reqbody"
 	"go.uber.org/zap"
+
+	"github.com/shigabutdinoff/metrics/internal/handlers/middleware/reqbody"
 )
 
 const header = "HashSHA256"

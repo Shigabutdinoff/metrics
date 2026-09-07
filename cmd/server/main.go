@@ -4,9 +4,10 @@ import (
 	"flag"
 
 	"github.com/caarlos0/env/v11"
+	"go.uber.org/zap"
+
 	"github.com/shigabutdinoff/metrics/internal/server"
 	"github.com/shigabutdinoff/metrics/internal/storage"
-	"go.uber.org/zap"
 )
 
 var (

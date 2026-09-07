@@ -8,9 +8,10 @@ import (
 	"os"
 	"path/filepath"
 
+	"go.uber.org/zap"
+
 	m "github.com/shigabutdinoff/metrics/internal/model/metrics"
 	"github.com/shigabutdinoff/metrics/internal/storage"
-	"go.uber.org/zap"
 )
 
 type Service struct {

@@ -5,9 +5,10 @@ import (
 	"net/http"
 	"strings"
 
+	"go.uber.org/zap"
+
 	"github.com/shigabutdinoff/metrics/internal/model/metrics"
 	"github.com/shigabutdinoff/metrics/internal/storage"
-	"go.uber.org/zap"
 )
 
 func StoreApplicationJSONBatch(st storage.Storage, logger *zap.Logger) http.HandlerFunc {
