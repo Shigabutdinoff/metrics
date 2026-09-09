@@ -8,6 +8,8 @@ import (
 
 	"go.uber.org/zap"
 
+	"github.com/shigabutdinoff/metrics/internal/audit"
+	"github.com/shigabutdinoff/metrics/internal/handlers/middleware/reqbody"
 	"github.com/shigabutdinoff/metrics/internal/model/metrics"
 	"github.com/shigabutdinoff/metrics/internal/storage"
 )
@@ -18,7 +20,7 @@ func StoreApplicationJSONBatch(st storage.Storage, logger *zap.Logger) http.Hand
 		var items []metrics.Metrics
 
 		if err := json.NewDecoder(req.Body).Decode(&items); err != nil {
-			http.Error(res, err.Error(), http.StatusBadRequest)
+			reqbody.Error(res, err)
 			return
 		}
 
@@ -27,6 +29,7 @@ func StoreApplicationJSONBatch(st storage.Storage, logger *zap.Logger) http.Hand
 			return
 		}
 
+		names := make([]string, 0, len(items))
 		for _, it := range items {
 			if strings.TrimSpace(it.ID) == "" {
 				http.Error(res, "Неверное название метрики", http.StatusNotFound)
@@ -42,7 +45,9 @@ func StoreApplicationJSONBatch(st storage.Storage, logger *zap.Logger) http.Hand
 				http.Error(res, "Неверный тип метрики", http.StatusBadRequest)
 				return
 			}
+			names = append(names, it.ID)
 		}
+		audit.Record(req.Context(), names...)
 
 		res.Header().Set("Content-Type", "application/json")
 		if err := json.NewEncoder(res).Encode(items); err != nil {

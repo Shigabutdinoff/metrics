@@ -8,18 +8,22 @@ import (
 	"time"
 
 	"go.uber.org/zap"
+	"go.uber.org/zap/zaptest/observer"
 )
 
 type fakeObserver struct {
-	mu     sync.Mutex
-	err    error
-	delay  time.Duration
-	events []Event
-	closed bool
+	mu        sync.Mutex
+	err       error
+	delay     time.Duration
+	ignoreCtx bool
+	events    []Event
+	closed    bool
 }
 
 func (f *fakeObserver) Update(ctx context.Context, e Event) error {
-	if f.delay > 0 {
+	if f.delay > 0 && f.ignoreCtx {
+		time.Sleep(f.delay)
+	} else if f.delay > 0 {
 		select {
 		case <-time.After(f.delay):
 		case <-ctx.Done():
@@ -229,4 +233,66 @@ func TestPublisherDeregisterIgnoresUncomparableObserver(t *testing.T) {
 	p.Deregister(nil)
 
 	p.Close()
+}
+
+func TestPublisherDropsBacklogAfterCloseTimeout(t *testing.T) {
+	core, logs := observer.New(zap.WarnLevel)
+	slow := &fakeObserver{delay: 30 * time.Millisecond, ignoreCtx: true}
+	p := NewPublisher(zap.New(core), WithBuffer(10), WithCloseTimeout(20*time.Millisecond))
+	p.Register(slow)
+
+	for range 10 {
+		p.Publish(newEvent())
+	}
+	p.Close()
+	p.wg.Wait()
+
+	if events, _ := slow.snapshot(); len(events) >= 10 {
+		t.Fatalf("после таймаута доставлено %d событий из 10, остаток должен быть отброшен", len(events))
+	}
+	if n := logs.FilterMessageSnippet("после таймаута").Len(); n != 1 {
+		t.Fatalf("записей об отброшенном остатке %d, ожидается 1", n)
+	}
+	if n := logs.FilterMessageSnippet("Не удалось отправить").Len(); n != 0 {
+		t.Fatalf("после таймаута %d предупреждений о доставке, ожидается 0", n)
+	}
+}
+
+func TestPublisherCloseGivesUpOnObserverIgnoringContext(t *testing.T) {
+	core, logs := observer.New(zap.WarnLevel)
+	stuck := &fakeObserver{delay: time.Hour, ignoreCtx: true}
+	p := NewPublisher(zap.New(core), WithCloseTimeout(50*time.Millisecond))
+	p.Register(stuck)
+	p.Publish(newEvent())
+
+	done := make(chan struct{})
+	go func() {
+		defer close(done)
+		p.Close()
+	}()
+
+	select {
+	case <-done:
+	case <-time.After(2 * time.Second):
+		t.Fatal("Close() не завершился: приёмник, игнорирующий ctx, блокирует остановку")
+	}
+	if n := logs.FilterMessageSnippet("не остановился").Len(); n != 1 {
+		t.Fatalf("предупреждений о зависшем приёмнике %d, ожидается 1", n)
+	}
+}
+
+func TestPublisherDeliversWithinFullCloseTimeout(t *testing.T) {
+	const events = 5
+
+	// доставка дольше половины бюджета: ранняя отмена ctx съела бы остаток
+	slow := &fakeObserver{delay: 60 * time.Millisecond}
+	p := newTestPublisher([]Option{WithCloseTimeout(400 * time.Millisecond)}, slow)
+	for range events {
+		p.Publish(newEvent())
+	}
+
+	p.Close()
+	if got, _ := slow.snapshot(); len(got) != events {
+		t.Fatalf("доставлено %d событий из %d", len(got), events)
+	}
 }

@@ -6,6 +6,8 @@ import (
 	"net/http"
 	"strings"
 
+	"github.com/shigabutdinoff/metrics/internal/audit"
+	"github.com/shigabutdinoff/metrics/internal/handlers/middleware/reqbody"
 	"github.com/shigabutdinoff/metrics/internal/handlers/request"
 	"github.com/shigabutdinoff/metrics/internal/model/metrics"
 	"github.com/shigabutdinoff/metrics/internal/storage"
@@ -41,7 +43,7 @@ func StoreApplicationJSON(st storage.Storage) http.HandlerFunc {
 	return func(res http.ResponseWriter, req *http.Request) {
 		var upd metrics.Metrics
 		if err := json.NewDecoder(req.Body).Decode(&upd); err != nil {
-			http.Error(res, err.Error(), http.StatusBadRequest)
+			reqbody.Error(res, err)
 			return
 		}
 
@@ -59,6 +61,7 @@ func StoreApplicationJSON(st storage.Storage) http.HandlerFunc {
 			http.Error(res, "неверный тип метрики", http.StatusBadRequest)
 			return
 		}
+		audit.Record(req.Context(), upd.ID)
 
 		res.Header().Set("Content-Type", "application/json")
 		if err := json.NewEncoder(res).Encode(upd); err != nil {

@@ -1,8 +1,9 @@
-package auditmw
+package auditmw_test
 
 import (
 	"bytes"
 	"compress/gzip"
+	"context"
 	"encoding/json"
 	"net/http"
 	"net/http/httptest"
@@ -15,6 +16,7 @@ import (
 	"go.uber.org/zap"
 
 	"github.com/shigabutdinoff/metrics/internal/audit"
+	"github.com/shigabutdinoff/metrics/internal/handlers/middleware/auditmw"
 	"github.com/shigabutdinoff/metrics/internal/handlers/middleware/compress"
 	"github.com/shigabutdinoff/metrics/internal/handlers/middleware/hash"
 	"github.com/shigabutdinoff/metrics/internal/handlers/route/update"
@@ -55,10 +57,10 @@ func newRouter(n audit.Notifier) chi.Router {
 	r.Group(func(r chi.Router) {
 		r.Use(compress.GzipMiddleware())
 		r.Use(hash.Middleware("", log))
-		r.With(FromPath(n, log)).Post("/update/{type}/{name}/{value}", update.StoreTextPlain(st))
+		r.With(auditmw.FromPath(n, log)).Post("/update/{type}/{name}/{value}", update.StoreTextPlain(st))
 		r.Get("/value/{type}/{name}", value.ShowTextPlain(st))
-		r.With(FromBody(n, log)).Post("/update/", update.StoreApplicationJSON(st))
-		r.With(FromBody(n, log)).Post("/updates/", updates.StoreApplicationJSONBatch(st, log))
+		r.With(auditmw.FromBody(n, log)).Post("/update/", update.StoreApplicationJSON(st))
+		r.With(auditmw.FromBody(n, log)).Post("/updates/", updates.StoreApplicationJSONBatch(st, log))
 	})
 	return r
 }
@@ -240,28 +242,41 @@ func TestMiddlewareKeepsBodyIntactForHandler(t *testing.T) {
 	}
 }
 
-func TestNamesFromBody(t *testing.T) {
-	tests := []struct {
-		name    string
-		body    string
-		want    []string
-		wantErr bool
-	}{
-		{name: "объект", body: `{"id":"Alloc","type":"gauge","value":1}`, want: []string{"Alloc"}},
-		{name: "массив", body: `[{"id":"Alloc"},{"id":"Frees"}]`, want: []string{"Alloc", "Frees"}},
-		{name: "пробелы перед массивом", body: " \n\t[{\"id\":\"Sys\"}]", want: []string{"Sys"}},
-		{name: "битый JSON", body: `{`, wantErr: true},
-	}
+func TestFromBodyUsesRecordedNames(t *testing.T) {
+	n := &fakeNotifier{}
+	h := auditmw.FromBody(n, zap.NewNop())(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		audit.Record(r.Context(), "Alloc", "Frees")
+		w.WriteHeader(http.StatusOK)
+	}))
 
-	for _, tt := range tests {
-		t.Run(tt.name, func(t *testing.T) {
-			got, err := namesFromBody(nil, []byte(tt.body))
-			if (err != nil) != tt.wantErr {
-				t.Fatalf("err = %v, ожидается ошибка: %v", err, tt.wantErr)
-			}
-			if !tt.wantErr {
-				assertMetrics(t, got, tt.want)
-			}
-		})
+	req := httptest.NewRequest(http.MethodPost, "/updates/", strings.NewReader("не json"))
+	req.RemoteAddr = remoteAddr
+	rr := httptest.NewRecorder()
+	h.ServeHTTP(rr, req)
+
+	events := n.all()
+	if len(events) != 1 {
+		t.Fatalf("опубликовано %d событий, ожидается 1", len(events))
 	}
+	assertMetrics(t, events[0].Metrics, []string{"Alloc", "Frees"})
+}
+
+func TestFromBodyWithoutRecordPublishesNothing(t *testing.T) {
+	n := &fakeNotifier{}
+	h := auditmw.FromBody(n, zap.NewNop())(http.HandlerFunc(func(w http.ResponseWriter, _ *http.Request) {
+		w.WriteHeader(http.StatusOK)
+	}))
+
+	req := httptest.NewRequest(http.MethodPost, "/update/", strings.NewReader(`{"id":"Alloc","type":"gauge","value":1}`))
+	req.RemoteAddr = remoteAddr
+	rr := httptest.NewRecorder()
+	h.ServeHTTP(rr, req)
+
+	if events := n.all(); len(events) != 0 {
+		t.Fatalf("опубликовано %d событий, ожидается 0: имена берутся только из Record", len(events))
+	}
+}
+
+func TestRecordWithoutMiddleware(t *testing.T) {
+	audit.Record(context.Background(), "Alloc")
 }

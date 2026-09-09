@@ -21,6 +21,7 @@ import (
 	"github.com/shigabutdinoff/metrics/internal/handlers/middleware/compress"
 	"github.com/shigabutdinoff/metrics/internal/handlers/middleware/hash"
 	"github.com/shigabutdinoff/metrics/internal/handlers/middleware/logging"
+	"github.com/shigabutdinoff/metrics/internal/handlers/middleware/reqbody"
 	"github.com/shigabutdinoff/metrics/internal/handlers/route/healthcheck"
 	"github.com/shigabutdinoff/metrics/internal/handlers/route/metrics"
 	"github.com/shigabutdinoff/metrics/internal/handlers/route/update"
@@ -122,6 +123,7 @@ func (s *Server) setupRoutes() {
 	r.Group(func(r chi.Router) {
 		r.Use(middleware.AllowContentType("text/plain"))
 		r.Use(compress.GzipMiddleware())
+		r.Use(middleware.RequestSize(reqbody.MaxBodySize))
 		r.Use(hash.Middleware(s.Key, s.Logger))
 		r.Get("/", metrics.Index(s.Storage))
 		r.With(s.audit(auditmw.FromPath)).Post("/update/{type}/{name}/{value}", update.StoreTextPlain(s.Storage))
@@ -130,6 +132,7 @@ func (s *Server) setupRoutes() {
 	r.Group(func(r chi.Router) {
 		r.Use(middleware.AllowContentType("application/json"))
 		r.Use(compress.GzipMiddleware())
+		r.Use(middleware.RequestSize(reqbody.MaxBodySize))
 		r.Use(hash.Middleware(s.Key, s.Logger))
 		r.With(s.audit(auditmw.FromBody)).Post("/update/", update.StoreApplicationJSON(s.Storage))
 		r.With(s.audit(auditmw.FromBody)).Post("/updates/", updatesRoute.StoreApplicationJSONBatch(s.Storage, s.Logger))
@@ -141,10 +144,12 @@ func (s *Server) setupRoutes() {
 	s.Router = r
 }
 
-// Run настраивает сервер и блокируется на обслуживании запросов.
-func (s *Server) Run() {
-	s.setupAudit()
+// Run настраивает сервер и обслуживает запросы до ошибки.
+func (s *Server) Run() error {
 	defer s.closeAudit()
+	if err := s.setupAudit(); err != nil {
+		return err
+	}
 
 	s.setupRoutes()
 
@@ -177,10 +182,7 @@ func (s *Server) Run() {
 		}()
 	}
 
-	if err := http.ListenAndServe(s.Address, s.Router); err != nil {
-		s.Logger.Fatal("Failed to start server", zap.Error(err))
-		panic(err)
-	}
+	return http.ListenAndServe(s.Address, s.Router)
 }
 
 func pprofHandler() http.Handler {

@@ -24,8 +24,12 @@ func NewFileSink(path string) (*FileSink, error) {
 	return &FileSink{f: f, enc: json.NewEncoder(f)}, nil
 }
 
-// Update дописывает событие новой строкой в конец файла.
-func (s *FileSink) Update(_ context.Context, e Event) error {
+// Update дописывает событие в файл, отменённый ctx прекращает запись.
+func (s *FileSink) Update(ctx context.Context, e Event) error {
+	if err := ctx.Err(); err != nil {
+		return err
+	}
+
 	return s.enc.Encode(e)
 }
 

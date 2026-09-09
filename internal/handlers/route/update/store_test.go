@@ -4,6 +4,7 @@ import (
 	"bytes"
 	"context"
 	"encoding/json"
+	"errors"
 	"net/http"
 	"net/http/httptest"
 	"strings"
@@ -11,6 +12,7 @@ import (
 
 	"github.com/go-chi/chi/v5"
 
+	"github.com/shigabutdinoff/metrics/internal/audit"
 	"github.com/shigabutdinoff/metrics/internal/model/metrics"
 	"github.com/shigabutdinoff/metrics/internal/storage"
 )
@@ -192,5 +194,28 @@ func BenchmarkStoreApplicationJSON(b *testing.B) {
 		if rr.Code != http.StatusOK {
 			b.Fatalf("статус = %d, ожидается %d", rr.Code, http.StatusOK)
 		}
+	}
+}
+
+// brokenWriter отвергает запись тела, имитируя оборванное соединение.
+type brokenWriter struct {
+	http.ResponseWriter
+}
+
+func (brokenWriter) Write([]byte) (int, error) {
+	return 0, errors.New("соединение закрыто")
+}
+
+func TestStoreApplicationJSONRecordsAuditOnWriteError(t *testing.T) {
+	var recorded audit.Names
+	ctx := audit.WithRecord(context.Background(), &recorded)
+	req := httptest.NewRequest(http.MethodPost, "/update/",
+		strings.NewReader(`{"id":"Alloc","type":"gauge","value":1}`)).WithContext(ctx)
+
+	StoreApplicationJSON(storage.NewMemStorage())(brokenWriter{httptest.NewRecorder()}, req)
+
+	// метрика уже сохранена, ошибка записи ответа не отменяет событие аудита
+	if got := recorded.Collected(); len(got) != 1 || got[0] != "Alloc" {
+		t.Fatalf("имена для аудита = %v, ожидается [Alloc]", got)
 	}
 }

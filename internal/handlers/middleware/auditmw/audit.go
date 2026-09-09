@@ -2,8 +2,7 @@
 package auditmw
 
 import (
-	"bytes"
-	"encoding/json"
+	"errors"
 	"net"
 	"net/http"
 	"net/url"
@@ -14,28 +13,26 @@ import (
 	"go.uber.org/zap"
 
 	"github.com/shigabutdinoff/metrics/internal/audit"
-	"github.com/shigabutdinoff/metrics/internal/handlers/middleware/reqbody"
-	"github.com/shigabutdinoff/metrics/internal/model/metrics"
 )
 
-type extractor func(r *http.Request, body []byte) ([]string, error)
+type extractor func(r *http.Request, recorded []string) ([]string, error)
 
 // FromPath аудирует запись метрики с именем в URL-параметре {name}.
 func FromPath(n audit.Notifier, log *zap.Logger) func(http.Handler) http.Handler {
-	return wrap(n, log, namesFromPath)
+	return wrap(n, log, false, namesFromPath)
 }
 
-// FromBody аудирует запись метрик из JSON-тела: объект или массив.
+// FromBody аудирует запись метрик, имена хендлер передаёт через audit.Record.
 func FromBody(n audit.Notifier, log *zap.Logger) func(http.Handler) http.Handler {
-	return wrap(n, log, namesFromBody)
+	return wrap(n, log, true, namesFromRecord)
 }
 
-func wrap(n audit.Notifier, log *zap.Logger, ex extractor) func(http.Handler) http.Handler {
+func wrap(n audit.Notifier, log *zap.Logger, record bool, ex extractor) func(http.Handler) http.Handler {
 	return func(next http.Handler) http.Handler {
 		return http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
-			body, ok := reqbody.Read(w, r)
-			if !ok {
-				return
+			var recorded audit.Names
+			if record {
+				r = r.WithContext(audit.WithRecord(r.Context(), &recorded))
 			}
 
 			ww := middleware.NewWrapResponseWriter(w, r.ProtoMajor)
@@ -45,7 +42,7 @@ func wrap(n audit.Notifier, log *zap.Logger, ex extractor) func(http.Handler) ht
 				return
 			}
 
-			names, err := ex(r, body)
+			names, err := ex(r, recorded.Collected())
 			if err != nil {
 				log.Warn("Не удалось определить наименования метрик для аудита", zap.Error(err))
 				return
@@ -60,28 +57,14 @@ func wrap(n audit.Notifier, log *zap.Logger, ex extractor) func(http.Handler) ht
 	}
 }
 
-func namesFromBody(_ *http.Request, body []byte) ([]string, error) {
-	trimmed := bytes.TrimLeft(body, " \t\r\n")
-	if len(trimmed) > 0 && trimmed[0] == '[' {
-		var items []metrics.Metrics
-		if err := json.Unmarshal(trimmed, &items); err != nil {
-			return nil, err
-		}
-		names := make([]string, len(items))
-		for i, it := range items {
-			names[i] = it.ID
-		}
-		return names, nil
+func namesFromRecord(_ *http.Request, recorded []string) ([]string, error) {
+	if len(recorded) == 0 {
+		return nil, errors.New("хендлер не передал имена метрик")
 	}
-
-	var m metrics.Metrics
-	if err := json.Unmarshal(trimmed, &m); err != nil {
-		return nil, err
-	}
-	return []string{m.ID}, nil
+	return recorded, nil
 }
 
-func namesFromPath(r *http.Request, _ []byte) ([]string, error) {
+func namesFromPath(r *http.Request, _ []string) ([]string, error) {
 	name, err := url.PathUnescape(chi.URLParam(r, "name"))
 	if err != nil {
 		return nil, err

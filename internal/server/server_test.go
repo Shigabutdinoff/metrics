@@ -14,13 +14,17 @@ import (
 	"net/http/httptest"
 	"os"
 	"path/filepath"
+	"strings"
+	"sync"
 	"testing"
+	"time"
 
-	"github.com/go-chi/chi/v5"
 	"github.com/stretchr/testify/require"
 	"go.uber.org/zap"
 
+	"github.com/shigabutdinoff/metrics/internal/audit"
 	"github.com/shigabutdinoff/metrics/internal/handlers/middleware/compress"
+	"github.com/shigabutdinoff/metrics/internal/handlers/middleware/reqbody"
 	"github.com/shigabutdinoff/metrics/internal/model/metrics"
 	"github.com/shigabutdinoff/metrics/internal/storage"
 )
@@ -88,20 +92,19 @@ func TestNew(t *testing.T) {
 }
 
 func TestServer_Run(t *testing.T) {
-	t.Run("паникует при ошибке прослушивания", func(t *testing.T) {
-		s := &Server{
-			Storage: storage.NewMemStorage(),
-			Address: "bad",
-			Router:  chi.NewRouter(),
-		}
+	t.Run("возвращает ошибку прослушивания", func(t *testing.T) {
+		s := New(storage.NewMemStorage(), zap.NewNop())
+		s.Address = "bad"
 
-		defer func() {
-			if r := recover(); r == nil {
-				t.Fatalf("Run() не вызвал панику при ошибке прослушивания")
-			}
-		}()
+		require.Error(t, s.Run())
+	})
 
-		s.Run()
+	t.Run("возвращает ошибку аудита", func(t *testing.T) {
+		s := New(storage.NewMemStorage(), zap.NewNop())
+		s.Address = "bad"
+		s.AuditFile = filepath.Join(t.TempDir(), "missing", "audit.log")
+
+		require.ErrorIs(t, s.Run(), os.ErrNotExist)
 	})
 }
 
@@ -310,10 +313,140 @@ func TestCloseAuditClosesFileSink(t *testing.T) {
 	s := New(storage.NewMemStorage(), zap.NewNop())
 	s.AuditFile = filepath.Join(t.TempDir(), "audit.log")
 
-	s.setupAudit()
+	require.NoError(t, s.setupAudit())
 	require.Len(t, s.auditClosers, 1)
+	sink := s.auditClosers[0]
 
 	s.closeAudit()
 
-	require.ErrorIs(t, s.auditClosers[0].Close(), os.ErrClosed)
+	require.ErrorIs(t, sink.Close(), os.ErrClosed)
+	require.Empty(t, s.auditClosers)
+}
+
+func TestSetupAuditFailsFast(t *testing.T) {
+	t.Run("файл аудита не открыть", func(t *testing.T) {
+		s := New(storage.NewMemStorage(), zap.NewNop())
+		s.AuditFile = filepath.Join(t.TempDir(), "missing", "audit.log")
+
+		require.ErrorIs(t, s.setupAudit(), os.ErrNotExist)
+		require.Nil(t, s.auditor)
+	})
+
+	t.Run("некорректный URL аудита", func(t *testing.T) {
+		s := New(storage.NewMemStorage(), zap.NewNop())
+		s.AuditURL = "not a url"
+
+		require.Error(t, s.setupAudit())
+		require.Nil(t, s.auditor)
+	})
+
+	t.Run("файл аудита закрывается при ошибке URL", func(t *testing.T) {
+		s := New(storage.NewMemStorage(), zap.NewNop())
+		s.Address = "bad"
+		s.AuditFile = filepath.Join(t.TempDir(), "audit.log")
+		s.AuditURL = "not a url"
+
+		require.Error(t, s.Run())
+		// приёмники закрыты и сброшены, дескриптор файла не утёк
+		require.Nil(t, s.auditor)
+		require.Empty(t, s.auditClosers)
+	})
+}
+
+// recordingSink копит события аудита, дошедшие до приёмника.
+type recordingSink struct {
+	mu     sync.Mutex
+	events []audit.Event
+}
+
+func (o *recordingSink) Update(_ context.Context, e audit.Event) error {
+	o.mu.Lock()
+	defer o.mu.Unlock()
+	o.events = append(o.events, e)
+	return nil
+}
+
+func (o *recordingSink) snapshot() []audit.Event {
+	o.mu.Lock()
+	defer o.mu.Unlock()
+	out := make([]audit.Event, len(o.events))
+	copy(out, o.events)
+	return out
+}
+
+func TestRouterPublishesAudit(t *testing.T) {
+	tests := []struct {
+		name        string
+		path        string
+		contentType string
+		body        string
+		want        []string
+	}{
+		{
+			name:        "текстовый роут",
+			path:        "/update/gauge/Sys/3",
+			contentType: "text/plain",
+			want:        []string{"Sys"},
+		},
+		{
+			name:        "json одна метрика",
+			path:        "/update/",
+			contentType: "application/json",
+			body:        `{"id":"Alloc","type":"gauge","value":1}`,
+			want:        []string{"Alloc"},
+		},
+		{
+			name:        "json пачка",
+			path:        "/updates/",
+			contentType: "application/json",
+			body:        `[{"id":"Alloc","type":"gauge","value":1},{"id":"Poll","type":"counter","delta":2}]`,
+			want:        []string{"Alloc", "Poll"},
+		},
+	}
+
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			sink := &recordingSink{}
+			p := audit.NewPublisher(zap.NewNop(), audit.WithCloseTimeout(time.Second))
+			p.Register(sink)
+
+			s := New(storage.NewMemStorage(), zap.NewNop())
+			s.auditor = p
+			s.setupRoutes()
+
+			req := httptest.NewRequest(http.MethodPost, tt.path, strings.NewReader(tt.body))
+			req.Header.Set("Content-Type", tt.contentType)
+			rr := httptest.NewRecorder()
+			s.Router.ServeHTTP(rr, req)
+			require.Equal(t, http.StatusOK, rr.Code)
+
+			p.Close()
+			events := sink.snapshot()
+			require.Len(t, events, 1)
+			require.Equal(t, tt.want, events[0].Metrics)
+		})
+	}
+}
+
+func TestBodyLimit(t *testing.T) {
+	// сжатое тело мало, распакованное больше лимита
+	var buf bytes.Buffer
+	buf.WriteByte('[')
+	buf.Write(bytes.Repeat([]byte(" "), reqbody.MaxBodySize+1))
+	buf.WriteString(`{"id":"Alloc","type":"gauge","value":1}]`)
+	body := gzipBytes(buf.Bytes())
+
+	for _, key := range []string{"", "secret"} {
+		t.Run("ключ="+key, func(t *testing.T) {
+			s := newServer(key)
+
+			req := httptest.NewRequest(http.MethodPost, "/updates/", bytes.NewReader(body))
+			req.Header.Set("Content-Type", "application/json")
+			req.Header.Set("Content-Encoding", "gzip")
+			rr := httptest.NewRecorder()
+			s.Router.ServeHTTP(rr, req)
+
+			require.Equal(t, http.StatusRequestEntityTooLarge, rr.Code)
+		})
+	}
 }

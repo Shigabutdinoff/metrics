@@ -16,7 +16,7 @@ func (brokenBody) Close() error             { return nil }
 
 func TestRead(t *testing.T) {
 	t.Run("превышение лимита даёт 413", func(t *testing.T) {
-		body := strings.Repeat("a", maxBodySize+1)
+		body := strings.Repeat("a", MaxBodySize+1)
 		req := httptest.NewRequest(http.MethodPost, "/updates/", strings.NewReader(body))
 		rr := httptest.NewRecorder()
 		if _, ok := Read(rr, req); ok || rr.Code != http.StatusRequestEntityTooLarge {
@@ -56,6 +56,24 @@ func TestRead(t *testing.T) {
 		rest, _ := io.ReadAll(req.Body)
 		if string(rest) != "abc" {
 			t.Fatalf("r.Body после повторного Read = %q, ожидается %q", rest, "abc")
+		}
+	})
+}
+
+func TestError(t *testing.T) {
+	t.Run("превышение лимита даёт 413", func(t *testing.T) {
+		rr := httptest.NewRecorder()
+		Error(rr, &http.MaxBytesError{Limit: 8})
+		if rr.Code != http.StatusRequestEntityTooLarge {
+			t.Fatalf("статус = %d, ожидается %d", rr.Code, http.StatusRequestEntityTooLarge)
+		}
+	})
+
+	t.Run("прочая ошибка даёт 400 с текстом", func(t *testing.T) {
+		rr := httptest.NewRecorder()
+		Error(rr, errors.New("битый json"))
+		if rr.Code != http.StatusBadRequest || !strings.Contains(rr.Body.String(), "битый json") {
+			t.Fatalf("статус = %d, тело = %q; ожидается 400 с текстом ошибки", rr.Code, rr.Body.String())
 		}
 	})
 }

@@ -1,6 +1,7 @@
 package server
 
 import (
+	"fmt"
 	"net/http"
 
 	"go.uber.org/zap"
@@ -8,30 +9,29 @@ import (
 	"github.com/shigabutdinoff/metrics/internal/audit"
 )
 
-func (s *Server) setupAudit() {
+func (s *Server) setupAudit() error {
 	var sinks []audit.Observer
 
 	if s.AuditFile != "" {
 		sink, err := audit.NewFileSink(s.AuditFile)
 		if err != nil {
-			s.Logger.Warn("Не удалось открыть файл аудита", zap.Error(err))
-		} else {
-			sinks = append(sinks, sink)
-			s.auditClosers = append(s.auditClosers, sink)
+			return fmt.Errorf("файл аудита: %w", err)
 		}
+		sinks = append(sinks, sink)
+		s.auditClosers = append(s.auditClosers, sink)
 	}
 
 	if s.AuditURL != "" {
 		sink, err := audit.NewHTTPSink(s.AuditURL)
 		if err != nil {
-			s.Logger.Warn("Приёмник аудита по HTTP не подключён", zap.Error(err))
-		} else {
-			sinks = append(sinks, sink)
+			return err
 		}
+		sinks = append(sinks, sink)
 	}
 
 	if len(sinks) == 0 {
-		return
+		s.Logger.Info("Аудит отключён: приёмники не настроены")
+		return nil
 	}
 
 	p := audit.NewPublisher(s.Logger)
@@ -39,6 +39,7 @@ func (s *Server) setupAudit() {
 		p.Register(sink)
 	}
 	s.auditor = p
+	return nil
 }
 
 func (s *Server) audit(mw func(audit.Notifier, *zap.Logger) func(http.Handler) http.Handler) func(http.Handler) http.Handler {
@@ -49,13 +50,16 @@ func (s *Server) audit(mw func(audit.Notifier, *zap.Logger) func(http.Handler) h
 }
 
 func (s *Server) closeAudit() {
-	if s.auditor == nil {
-		return
+	if s.auditor != nil {
+		s.auditor.Close()
 	}
-	s.auditor.Close()
+
 	for _, c := range s.auditClosers {
 		if err := c.Close(); err != nil {
 			s.Logger.Warn("Ошибка закрытия приёмника аудита", zap.Error(err))
 		}
 	}
+
+	s.auditor = nil
+	s.auditClosers = nil
 }

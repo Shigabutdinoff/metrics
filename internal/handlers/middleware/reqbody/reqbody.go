@@ -8,7 +8,8 @@ import (
 	"net/http"
 )
 
-const maxBodySize = 10 << 20
+// MaxBodySize предел размера тела запроса в байтах.
+const MaxBodySize = 10 << 20
 
 type body struct {
 	bytes.Reader
@@ -27,14 +28,9 @@ func Read(w http.ResponseWriter, r *http.Request) ([]byte, bool) {
 		return nil, true
 	}
 
-	data, err := io.ReadAll(http.MaxBytesReader(w, r.Body, maxBodySize))
+	data, err := io.ReadAll(http.MaxBytesReader(w, r.Body, MaxBodySize))
 	if err != nil {
-		var maxErr *http.MaxBytesError
-		if errors.As(err, &maxErr) {
-			http.Error(w, "тело запроса слишком велико", http.StatusRequestEntityTooLarge)
-		} else {
-			http.Error(w, "не удалось прочитать тело запроса", http.StatusBadRequest)
-		}
+		respond(w, err, "не удалось прочитать тело запроса")
 		return nil, false
 	}
 	b := &body{data: data}
@@ -42,4 +38,18 @@ func Read(w http.ResponseWriter, r *http.Request) ([]byte, bool) {
 	r.Body = b
 
 	return data, true
+}
+
+// Error отвечает на ошибку разбора тела: 413 при превышении лимита.
+func Error(w http.ResponseWriter, err error) {
+	respond(w, err, err.Error())
+}
+
+func respond(w http.ResponseWriter, err error, msg string) {
+	var maxErr *http.MaxBytesError
+	if errors.As(err, &maxErr) {
+		http.Error(w, "тело запроса слишком велико", http.StatusRequestEntityTooLarge)
+		return
+	}
+	http.Error(w, msg, http.StatusBadRequest)
 }

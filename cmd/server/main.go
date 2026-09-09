@@ -70,5 +70,7 @@ func main() {
 		logger.Error("Не удалось распарить окружение", zap.Error(err))
 	}
 
-	s.Run()
+	if err := s.Run(); err != nil {
+		logger.Fatal("Сервер остановлен с ошибкой", zap.Error(err))
+	}
 }

@@ -13,6 +13,7 @@ import (
 const (
 	defaultBuffer       = 256
 	defaultCloseTimeout = 5 * time.Second
+	hardStopGrace       = 100 * time.Millisecond
 )
 
 // Observer приёмник событий аудита (подписчик).
@@ -157,21 +158,52 @@ func (p *Publisher) drain() {
 		close(drained)
 	}()
 
+	timer := time.NewTimer(p.closeTimeout)
+	defer timer.Stop()
+
 	select {
 	case <-drained:
-	case <-time.After(p.closeTimeout):
+		return
+	case <-timer.C:
 		p.cancel()
-		<-drained
+		p.log.Warn("Приёмник аудита не остановился, ожидание прекращено",
+			zap.Duration("waited", p.closeTimeout),
+		)
+	}
+
+	grace := time.NewTimer(hardStopGrace)
+	defer grace.Stop()
+
+	select {
+	case <-drained:
+	case <-grace.C:
 	}
 }
 
 func (p *Publisher) consume(s *subscription) {
+	var dropped uint64
 	for e := range s.ch {
-		if err := s.obs.Update(p.ctx, e); err != nil {
-			p.log.Warn("Не удалось отправить событие аудита",
-				zap.String("observer", s.name),
-				zap.Error(err),
-			)
+		if p.ctx.Err() != nil {
+			dropped++
+			continue
 		}
+		err := s.obs.Update(p.ctx, e)
+		if err == nil {
+			continue
+		}
+		if p.ctx.Err() != nil {
+			dropped++
+			continue
+		}
+		p.log.Warn("Не удалось отправить событие аудита",
+			zap.String("observer", s.name),
+			zap.Error(err),
+		)
+	}
+	if dropped > 0 {
+		p.log.Warn("События аудита отброшены после таймаута Close",
+			zap.String("observer", s.name),
+			zap.Uint64("dropped", dropped),
+		)
 	}
 }

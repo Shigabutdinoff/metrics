@@ -11,6 +11,7 @@ import (
 
 	"github.com/go-chi/chi/v5"
 
+	"github.com/shigabutdinoff/metrics/internal/handlers/middleware/reqbody"
 	"github.com/shigabutdinoff/metrics/internal/model/metrics"
 	"github.com/shigabutdinoff/metrics/internal/storage"
 )
@@ -53,7 +54,7 @@ func ShowApplicationJSON(st storage.Storage) http.HandlerFunc {
 	return func(res http.ResponseWriter, req *http.Request) {
 		var upd metrics.Metrics
 		if err := json.NewDecoder(req.Body).Decode(&upd); err != nil {
-			http.Error(res, err.Error(), http.StatusBadRequest)
+			reqbody.Error(res, err)
 			return
 		}
 
