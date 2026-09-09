@@ -4,6 +4,7 @@ import (
 	"context"
 	"database/sql"
 	"errors"
+	"io"
 	"net/http"
 	"strings"
 	"time"
@@ -13,9 +14,14 @@ import (
 	"github.com/golang-migrate/migrate/v4"
 	_ "github.com/golang-migrate/migrate/v4/database/postgres"
 	_ "github.com/golang-migrate/migrate/v4/source/file"
+	"go.uber.org/zap"
+
+	"github.com/shigabutdinoff/metrics/internal/audit"
+	"github.com/shigabutdinoff/metrics/internal/handlers/middleware/auditmw"
 	"github.com/shigabutdinoff/metrics/internal/handlers/middleware/compress"
 	"github.com/shigabutdinoff/metrics/internal/handlers/middleware/hash"
 	"github.com/shigabutdinoff/metrics/internal/handlers/middleware/logging"
+	"github.com/shigabutdinoff/metrics/internal/handlers/middleware/reqbody"
 	"github.com/shigabutdinoff/metrics/internal/handlers/route/healthcheck"
 	"github.com/shigabutdinoff/metrics/internal/handlers/route/metrics"
 	"github.com/shigabutdinoff/metrics/internal/handlers/route/update"
@@ -25,32 +31,64 @@ import (
 	"github.com/shigabutdinoff/metrics/internal/service/mservice"
 	"github.com/shigabutdinoff/metrics/internal/service/persistent"
 	"github.com/shigabutdinoff/metrics/internal/storage"
-	"go.uber.org/zap"
 )
 
+// Значения полей Server по умолчанию.
 const (
-	DefaultAddress         = "localhost:8080"
-	DefaultStoreInterval   = 300
+	// DefaultAddress сервер слушает локальный порт 8080.
+	DefaultAddress = "localhost:8080"
+	// DefaultStoreInterval метрики сохраняются раз в пять минут.
+	DefaultStoreInterval = 300
+	// DefaultFileStoragePath сохранение в файл выключено.
 	DefaultFileStoragePath = ""
-	DefaultRestore         = true
-	DefaultDatabaseDSN     = ""
-	DefaultKey             = ""
+	// DefaultRestore метрики восстанавливаются из файла при старте.
+	DefaultRestore = true
+	// DefaultDatabaseDSN работа с PostgreSQL выключена.
+	DefaultDatabaseDSN = ""
+	// DefaultKey проверка и выдача подписи выключены.
+	DefaultKey = ""
+	// DefaultAuditFile аудит в файл выключен.
+	DefaultAuditFile = ""
+	// DefaultAuditURL аудит по HTTP выключен.
+	DefaultAuditURL = ""
+	// DefaultPprofAddress сервер pprof выключен.
+	DefaultPprofAddress = ""
 )
 
+// Server HTTP-сервер метрик, поля с тегом env читаются из окружения.
 type Server struct {
-	Storage         storage.Storage
-	Address         string `env:"ADDRESS"`
-	Router          *chi.Mux
-	Logger          *zap.Logger
-	StoreInterval   int    `env:"STORE_INTERVAL"`
+	// Storage хранилище метрик.
+	Storage storage.Storage
+	// Address адрес, на котором сервер слушает HTTP, флаг -a.
+	Address string `env:"ADDRESS"`
+	// Router маршрутизатор, собирается при вызове Run.
+	Router *chi.Mux
+	// Logger журнал, куда пишутся запросы и ошибки.
+	Logger *zap.Logger
+	// StoreInterval период сохранения в файл в секундах, флаг -i, 0 синхронно.
+	StoreInterval int `env:"STORE_INTERVAL"`
+	// FileStoragePath путь к файлу с метриками, флаг -f.
 	FileStoragePath string `env:"FILE_STORAGE_PATH"`
-	Restore         bool   `env:"RESTORE"`
-	DatabaseDSN     string `env:"DATABASE_DSN"`
-	Key             string `env:"KEY"`
-	onChange        func()
-	Database        *sql.DB
+	// Restore восстанавливать ли метрики из файла при старте, флаг -r.
+	Restore bool `env:"RESTORE"`
+	// DatabaseDSN строка подключения к PostgreSQL, флаг -d.
+	DatabaseDSN string `env:"DATABASE_DSN"`
+	// Key ключ подписи HMAC-SHA256, флаг -k.
+	Key string `env:"KEY"`
+	// AuditFile путь к файлу аудита, флаг -audit-file.
+	AuditFile string `env:"AUDIT_FILE"`
+	// AuditURL адрес приёмника аудита, флаг -audit-url.
+	AuditURL string `env:"AUDIT_URL"`
+	// PprofAddress адрес отдельного сервера pprof, флаг -pprof-address.
+	PprofAddress string `env:"PPROF_ADDRESS"`
+	auditor      *audit.Publisher
+	auditClosers []io.Closer
+	onChange     func()
+	// Database соединение с PostgreSQL, открывается при непустом DatabaseDSN.
+	Database *sql.DB
 }
 
+// New создаёт сервер с настройками по умолчанию, роутер собирает Run.
 func New(st storage.Storage, logger *zap.Logger) *Server {
 	s := &Server{
 		Storage:         st,
@@ -61,12 +99,14 @@ func New(st storage.Storage, logger *zap.Logger) *Server {
 		Restore:         DefaultRestore,
 		DatabaseDSN:     DefaultDatabaseDSN,
 		Key:             DefaultKey,
+		AuditFile:       DefaultAuditFile,
+		AuditURL:        DefaultAuditURL,
+		PprofAddress:    DefaultPprofAddress,
 	}
 
 	return s
 }
 
-// setupRoutes собирает HTTP-роутер
 func (s *Server) setupRoutes() {
 	r := chi.NewRouter()
 	r.Use(logging.WithLogging(s.Logger))
@@ -83,17 +123,19 @@ func (s *Server) setupRoutes() {
 	r.Group(func(r chi.Router) {
 		r.Use(middleware.AllowContentType("text/plain"))
 		r.Use(compress.GzipMiddleware())
+		r.Use(middleware.RequestSize(reqbody.MaxBodySize))
 		r.Use(hash.Middleware(s.Key, s.Logger))
 		r.Get("/", metrics.Index(s.Storage))
-		r.Post("/update/{type}/{name}/{value}", update.StoreTextPlain(s.Storage))
+		r.With(s.audit(auditmw.FromPath)).Post("/update/{type}/{name}/{value}", update.StoreTextPlain(s.Storage))
 		r.Get("/value/{type}/{name}", value.ShowTextPlain(s.Storage))
 	})
 	r.Group(func(r chi.Router) {
 		r.Use(middleware.AllowContentType("application/json"))
 		r.Use(compress.GzipMiddleware())
+		r.Use(middleware.RequestSize(reqbody.MaxBodySize))
 		r.Use(hash.Middleware(s.Key, s.Logger))
-		r.Post("/update/", update.StoreApplicationJSON(s.Storage))
-		r.Post("/updates/", updatesRoute.StoreApplicationJSONBatch(s.Storage, s.Logger))
+		r.With(s.audit(auditmw.FromBody)).Post("/update/", update.StoreApplicationJSON(s.Storage))
+		r.With(s.audit(auditmw.FromBody)).Post("/updates/", updatesRoute.StoreApplicationJSONBatch(s.Storage, s.Logger))
 		r.Post("/value/", value.ShowApplicationJSON(s.Storage))
 	})
 	r.Get("/ping", healthcheck.Ping(func() *sql.DB {
@@ -102,7 +144,13 @@ func (s *Server) setupRoutes() {
 	s.Router = r
 }
 
-func (s *Server) Run() {
+// Run настраивает сервер и обслуживает запросы до ошибки.
+func (s *Server) Run() error {
+	defer s.closeAudit()
+	if err := s.setupAudit(); err != nil {
+		return err
+	}
+
 	s.setupRoutes()
 
 	ps := persistent.New(s.Storage, s.FileStoragePath, s.Logger)
@@ -120,10 +168,27 @@ func (s *Server) Run() {
 
 	s.configurePersistence(ps)
 
-	if err := http.ListenAndServe(s.Address, s.Router); err != nil {
-		s.Logger.Fatal("Failed to start server", zap.Error(err))
-		panic(err)
+	if s.PprofAddress != "" {
+		pprof := &http.Server{
+			Addr:              s.PprofAddress,
+			Handler:           pprofHandler(),
+			ReadHeaderTimeout: 5 * time.Second,
+			WriteTimeout:      60 * time.Second,
+		}
+		go func() {
+			if err := pprof.ListenAndServe(); err != nil {
+				s.Logger.Warn("pprof не запущен", zap.Error(err))
+			}
+		}()
 	}
+
+	return http.ListenAndServe(s.Address, s.Router)
+}
+
+func pprofHandler() http.Handler {
+	r := chi.NewRouter()
+	r.Mount("/debug", middleware.Profiler())
+	return r
 }
 
 func (s *Server) initDatabaseOrRestore(ps *persistent.Service) error {

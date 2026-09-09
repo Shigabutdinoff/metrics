@@ -1,3 +1,4 @@
+// Package healthcheck содержит хендлер проверки соединения с БД.
 package healthcheck
 
 import (
@@ -7,6 +8,7 @@ import (
 	"time"
 )
 
+// Ping обрабатывает GET /ping: 200 при живой БД, иначе 500.
 func Ping(getDB func() *sql.DB) http.HandlerFunc {
 	return func(res http.ResponseWriter, req *http.Request) {
 		db := getDB()

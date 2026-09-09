@@ -1,3 +1,4 @@
+// Package persistent сохраняет метрики в файл и восстанавливает их оттуда.
 package persistent
 
 import (
@@ -8,28 +9,34 @@ import (
 	"os"
 	"path/filepath"
 
+	"go.uber.org/zap"
+
 	m "github.com/shigabutdinoff/metrics/internal/model/metrics"
 	"github.com/shigabutdinoff/metrics/internal/storage"
-	"go.uber.org/zap"
 )
 
+// Service сохраняет метрики хранилища в файл и читает их обратно.
 type Service struct {
 	st   storage.Storage
 	path string
 	log  *zap.Logger
 }
 
+// New создаёт сервис, работающий с файлом по пути path.
 func New(st storage.Storage, path string, log *zap.Logger) *Service {
 	return &Service{st: st, path: path, log: log}
 }
 
+// Save пишет метрики во временный файл и переименовывает его.
 func (s *Service) Save() error {
-	var out []m.Metrics
 	ctx := context.Background()
-	for name, v := range s.st.GetGauges(ctx) {
+	gauges := s.st.GetGauges(ctx)
+	counters := s.st.GetCounters(ctx)
+	out := make([]m.Metrics, 0, len(gauges)+len(counters))
+	for name, v := range gauges {
 		out = append(out, m.Metrics{ID: name, MType: m.Gauge, Value: v})
 	}
-	for name, d := range s.st.GetCounters(ctx) {
+	for name, d := range counters {
 		out = append(out, m.Metrics{ID: name, MType: m.Counter, Delta: d})
 	}
 
@@ -63,6 +70,7 @@ func (s *Service) Save() error {
 	return os.Rename(tmp, s.path)
 }
 
+// Load читает метрики из файла, отсутствие файла не ошибка.
 func (s *Service) Load() error {
 	f, err := os.Open(s.path)
 	if err != nil {

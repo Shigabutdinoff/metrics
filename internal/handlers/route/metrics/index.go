@@ -1,3 +1,4 @@
+// Package metrics содержит хендлер вывода списка метрик.
 package metrics
 
 import (
@@ -10,11 +11,14 @@ import (
 	"github.com/shigabutdinoff/metrics/internal/storage"
 )
 
+// Index обрабатывает GET / и отдаёт список метрик в виде HTML.
 func Index(st storage.Storage) http.HandlerFunc {
 	return func(res http.ResponseWriter, req *http.Request) {
-		rows := make([]string, 0)
+		gauges := st.GetGauges(req.Context())
+		counters := st.GetCounters(req.Context())
+		rows := make([]string, 0, len(gauges)+len(counters))
 
-		for name, v := range st.GetGauges(req.Context()) {
+		for name, v := range gauges {
 			if v == nil {
 				continue
 			}
@@ -23,7 +27,7 @@ func Index(st storage.Storage) http.HandlerFunc {
 				"<li>gauge "+html.EscapeString(name)+": "+html.EscapeString(strconv.FormatFloat(*v, 'f', -1, 64))+"</li>",
 			)
 		}
-		for name, v := range st.GetCounters(req.Context()) {
+		for name, v := range counters {
 			if v == nil {
 				continue
 			}

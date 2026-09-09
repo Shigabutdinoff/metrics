@@ -1,3 +1,4 @@
+// Package hash проверяет и выставляет подпись в заголовке HashSHA256.
 package hash
 
 import (
@@ -5,20 +6,30 @@ import (
 	"crypto/hmac"
 	"crypto/sha256"
 	"encoding/hex"
-	"io"
 	"net/http"
+	"sync"
 
 	"go.uber.org/zap"
+
+	"github.com/shigabutdinoff/metrics/internal/handlers/middleware/reqbody"
 )
 
 const header = "HashSHA256"
 
-// maxBodySize 10 МБ
-const maxBodySize = 10 << 20
+const maxPooledBuffer = 64 << 10
+
+var buffers = sync.Pool{New: func() any { return new(bytes.Buffer) }}
+
+func putBuffer(buf *bytes.Buffer) {
+	if buf.Cap() <= maxPooledBuffer {
+		buf.Reset()
+		buffers.Put(buf)
+	}
+}
 
 type responseWriter struct {
 	http.ResponseWriter
-	buf        bytes.Buffer
+	buf        *bytes.Buffer
 	key        []byte
 	statusCode int
 }
@@ -51,38 +62,32 @@ func (rw *responseWriter) flush() error {
 	return err
 }
 
-// Middleware проверяет HashSHA256 входящих запросов и подписывает исходящие ответы.
+// Middleware проверяет подпись запросов и подписывает ответы.
 func Middleware(key string, logger *zap.Logger) func(http.Handler) http.Handler {
+	keyBytes := []byte(key)
 	return func(next http.Handler) http.Handler {
 		return http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 			if key == "" {
 				next.ServeHTTP(w, r)
 				return
 			}
-			keyBytes := []byte(key)
 
-			if r.Body != nil && r.Body != http.NoBody {
-				r.Body = http.MaxBytesReader(w, r.Body, maxBodySize)
-				body, err := io.ReadAll(r.Body)
-				if err != nil {
-					http.Error(w, "тело запроса слишком велико", http.StatusRequestEntityTooLarge)
+			body, ok := reqbody.Read(w, r)
+			if !ok {
+				return
+			}
+			if gotHash := r.Header.Get(header); body != nil && gotHash != "" {
+				mac := hmac.New(sha256.New, keyBytes)
+				mac.Write(body)
+				wantHash := hex.EncodeToString(mac.Sum(nil))
+				if !hmac.Equal([]byte(gotHash), []byte(wantHash)) {
+					http.Error(w, "несовпадение хэша", http.StatusBadRequest)
 					return
-				}
-				r.Body = io.NopCloser(bytes.NewReader(body))
-
-				gotHash := r.Header.Get(header)
-				if gotHash != "" {
-					mac := hmac.New(sha256.New, keyBytes)
-					mac.Write(body)
-					wantHash := hex.EncodeToString(mac.Sum(nil))
-					if !hmac.Equal([]byte(gotHash), []byte(wantHash)) {
-						http.Error(w, "несовпадение хэша", http.StatusBadRequest)
-						return
-					}
 				}
 			}
 
-			rw := &responseWriter{ResponseWriter: w, key: keyBytes}
+			rw := &responseWriter{ResponseWriter: w, key: keyBytes, buf: buffers.Get().(*bytes.Buffer)}
+			defer putBuffer(rw.buf)
 			next.ServeHTTP(rw, r)
 			if err := rw.flush(); err != nil {
 				logger.Error("Ошибка записи тела ответа", zap.Error(err))

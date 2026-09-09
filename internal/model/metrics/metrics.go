@@ -1,14 +1,15 @@
 package metrics
 
-// NOTE: не усложняем пример, вводя иерархическую вложенность структур,
-// ограничиваясь плоской моделью.
-// Delta и Value объявлены через указатели,
-// чтобы отличать значение "0" от незаданного значения
-// и соответственно не кодировать его в структуру.
+// Metrics метрика в том виде, в котором она передаётся по JSON-эндпоинтам.
 type Metrics struct {
-	ID    string       `json:"id"`
-	MType Type         `json:"type"`
+	// ID имя метрики.
+	ID string `json:"id"`
+	// MType тип метрики: Counter или Gauge.
+	MType Type `json:"type"`
+	// Delta значение метрики, если MType равен Counter.
 	Delta CounterValue `json:"delta,omitempty"`
-	Value GaugeValue   `json:"value,omitempty"`
-	Hash  string       `json:"hash,omitempty"`
+	// Value значение метрики, если MType равен Gauge.
+	Value GaugeValue `json:"value,omitempty"`
+	// Hash подпись метрики, в HTTP-слое не используется.
+	Hash string `json:"hash,omitempty"`
 }

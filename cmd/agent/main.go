@@ -1,3 +1,12 @@
+// Команда agent собирает метрики и отправляет их на сервер.
+//
+// Параметры задаются флагами и переменными окружения:
+//
+//	-a, -address          адрес сервера метрик
+//	-p, -poll-interval    период снятия метрик в секундах
+//	-r, -report-interval  период отправки метрик в секундах
+//	-k, -key              ключ подписи HMAC-SHA256
+//	-l, -rate-limit       число одновременных запросов к серверу
 package main
 
 import (
@@ -10,10 +19,11 @@ import (
 	"time"
 
 	"github.com/caarlos0/env/v11"
+	"go.uber.org/zap"
+
 	"github.com/shigabutdinoff/metrics/internal/agent"
 	config "github.com/shigabutdinoff/metrics/internal/config/agent"
 	"github.com/shigabutdinoff/metrics/internal/storage"
-	"go.uber.org/zap"
 )
 
 var (
@@ -35,10 +45,8 @@ func init() {
 func main() {
 	flag.Parse()
 
-	// создаём предустановленный регистратор zap
 	logger, err := zap.NewDevelopment()
 	if err != nil {
-		// вызываем панику, если ошибка
 		panic(err)
 	}
 	defer logger.Sync()

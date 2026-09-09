@@ -2,6 +2,7 @@ package metrics
 
 import (
 	"context"
+	"fmt"
 	"net/http"
 	"net/http/httptest"
 	"testing"
@@ -41,6 +42,14 @@ func (s *stubStorage) GetCounters(context.Context) storage.Counters {
 		return make(storage.Counters)
 	}
 	return s.counters
+}
+
+func (s *stubStorage) GetGauge(_ context.Context, name string) metrics.GaugeValue {
+	return s.gauges[name]
+}
+
+func (s *stubStorage) GetCounter(_ context.Context, name string) metrics.CounterValue {
+	return s.counters[name]
 }
 
 func TestIndex(t *testing.T) {
@@ -116,5 +125,27 @@ func TestIndex(t *testing.T) {
 				t.Fatalf("тело = %q, ожидается %q", rr.Body.String(), tt.wantBody)
 			}
 		})
+	}
+}
+
+func BenchmarkIndex(b *testing.B) {
+	st := storage.NewMemStorage()
+	ctx := context.Background()
+	for i := range 45 {
+		v := float64(i) + 0.5
+		st.SetGauge(ctx, fmt.Sprintf("Gauge%02d", i), &v)
+	}
+	delta := int64(42)
+	st.AddCounter(ctx, "PollCount", &delta)
+	h := Index(st)
+	req := httptest.NewRequest(http.MethodGet, "/", nil)
+
+	b.ReportAllocs()
+	for b.Loop() {
+		rr := httptest.NewRecorder()
+		h.ServeHTTP(rr, req)
+		if rr.Code != http.StatusOK {
+			b.Fatalf("статус = %d, ожидается %d", rr.Code, http.StatusOK)
+		}
 	}
 }

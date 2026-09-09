@@ -9,28 +9,40 @@ import (
 	"encoding/hex"
 	"encoding/json"
 	"fmt"
+	"io"
 	"math/rand"
 	"net/http"
 	"runtime"
+	"sync"
 	"time"
 
 	"github.com/go-resty/resty/v2"
+	"go.uber.org/zap"
+	"golang.org/x/sync/errgroup"
+
 	"github.com/shigabutdinoff/metrics/internal/config/agent"
 	"github.com/shigabutdinoff/metrics/internal/model/metrics"
 	"github.com/shigabutdinoff/metrics/internal/repository"
 	"github.com/shigabutdinoff/metrics/internal/storage"
-	"go.uber.org/zap"
-	"golang.org/x/sync/errgroup"
 )
 
+// Agent собирает метрики и отправляет их на сервер.
 type Agent struct {
-	Storage        storage.Storage
-	Client         *resty.Client
-	PollInterval   time.Duration
+	// Storage хранилище собранных метрик.
+	Storage storage.Storage
+	// Client HTTP-клиент с настроенными повторами.
+	Client *resty.Client
+	// PollInterval период снятия метрик из Config.PollIntervalInt64.
+	PollInterval time.Duration
+	// ReportInterval период отправки из Config.ReportIntervalInt64.
 	ReportInterval time.Duration
-	Logger         *zap.Logger
+	// Logger журнал, куда пишутся ошибки сбора и отправки.
+	Logger *zap.Logger
+	// Config конфигурация агента: адрес сервера, интервалы, ключ подписи.
 	agent.Config
 }
+
+var gzipWriters = sync.Pool{New: func() any { return gzip.NewWriter(io.Discard) }}
 
 func newClient() *resty.Client {
 	c := resty.New().SetTimeout(10 * time.Second)
@@ -50,6 +62,7 @@ func newClient() *resty.Client {
 	return c
 }
 
+// New создаёт агент с настройками по умолчанию и клиентом с ретраями.
 func New(st storage.Storage, logger *zap.Logger) Agent {
 	return Agent{
 		Storage: st,
@@ -64,7 +77,6 @@ func New(st storage.Storage, logger *zap.Logger) Agent {
 	}
 }
 
-// workerCount возвращает число воркеров пула отправки
 func (a *Agent) workerCount() int {
 	if n := int(a.Config.RateLimitInt64); n >= 1 {
 		return n
@@ -108,7 +120,6 @@ func (a *Agent) Run(ctx context.Context) error {
 	return g.Wait()
 }
 
-// collectLoop вызывает fn сразу и далее каждые d, пока не отменён ctx
 func (a *Agent) collectLoop(ctx context.Context, d time.Duration, fn func()) {
 	fn()
 
@@ -125,7 +136,6 @@ func (a *Agent) collectLoop(ctx context.Context, d time.Duration, fn func()) {
 	}
 }
 
-// reportLoop каждые ReportInterval читает накопленные метрики и отправляет весь батч одним заданием в пул
 func (a *Agent) reportLoop(ctx context.Context, jobs chan<- []metrics.Metrics) {
 	defer close(jobs)
 
@@ -150,6 +160,7 @@ func (a *Agent) reportLoop(ctx context.Context, jobs chan<- []metrics.Metrics) {
 	}
 }
 
+// CollectMetrics снимает метрики runtime, растит PollCount и RandomValue.
 func (a *Agent) CollectMetrics() {
 	var m repository.MemStats
 	runtime.ReadMemStats(&m.MemStats)
@@ -167,16 +178,17 @@ func (a *Agent) CollectMetrics() {
 	a.Storage.SetGauge(ctx, "RandomValue", &randomValue)
 }
 
-// buildBatch собирает текущий снимок накопленных метрик из хранилища
 func (a *Agent) buildBatch(ctx context.Context) []metrics.Metrics {
-	var batch []metrics.Metrics
-	for name, value := range a.Storage.GetGauges(ctx) {
+	gauges := a.Storage.GetGauges(ctx)
+	counters := a.Storage.GetCounters(ctx)
+	batch := make([]metrics.Metrics, 0, len(gauges)+len(counters))
+	for name, value := range gauges {
 		if value == nil {
 			continue
 		}
 		batch = append(batch, metrics.Metrics{ID: name, MType: metrics.Gauge, Value: value})
 	}
-	for name, value := range a.Storage.GetCounters(ctx) {
+	for name, value := range counters {
 		if value == nil {
 			continue
 		}
@@ -199,7 +211,12 @@ func (a *Agent) sendMetrics(ctx context.Context, items []metrics.Metrics) error 
 	}
 
 	var compressedBody bytes.Buffer
-	zw := gzip.NewWriter(&compressedBody)
+	zw := gzipWriters.Get().(*gzip.Writer)
+	zw.Reset(&compressedBody)
+	defer func() {
+		zw.Reset(io.Discard)
+		gzipWriters.Put(zw)
+	}()
 	if _, err := zw.Write(body); err != nil {
 		return err
 	}
@@ -207,8 +224,7 @@ func (a *Agent) sendMetrics(ctx context.Context, items []metrics.Metrics) error 
 		return err
 	}
 
-	baseURL := a.Address
-	path := fmt.Sprintf("%s/updates/", baseURL)
+	path := string(a.Address) + "/updates/"
 
 	req := a.Client.R().
 		SetContext(ctx).

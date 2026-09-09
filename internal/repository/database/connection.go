@@ -1,3 +1,4 @@
+// Package database реализует хранение метрик в PostgreSQL.
 package database
 
 import (
@@ -7,6 +8,7 @@ import (
 	_ "github.com/jackc/pgx/v5/stdlib"
 )
 
+// Connection открывает и проверяет соединение с PostgreSQL по ps.
 func Connection(ps string) (*sql.DB, error) {
 	if ps == "" {
 		return nil, errors.New("не удалось получить адрес подключения к БД")

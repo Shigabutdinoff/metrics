@@ -1,12 +1,26 @@
+// Команда server принимает и хранит метрики.
+//
+// Параметры задаются флагами и переменными окружения:
+//
+//	-a, -address            адрес, на котором сервер слушает HTTP
+//	-i, -store-interval     период сохранения метрик в файл в секундах
+//	-f, -file-storage-path  путь к файлу с метриками
+//	-r, -restore            восстанавливать ли метрики из файла при старте
+//	-d, -database-dsn       строка подключения к PostgreSQL
+//	-k, -key                ключ подписи HMAC-SHA256
+//	-audit-file             путь к файлу аудита
+//	-audit-url              адрес приёмника аудита
+//	-pprof-address          адрес сервера pprof, пустой отключает его
 package main
 
 import (
 	"flag"
 
 	"github.com/caarlos0/env/v11"
+	"go.uber.org/zap"
+
 	"github.com/shigabutdinoff/metrics/internal/server"
 	"github.com/shigabutdinoff/metrics/internal/storage"
-	"go.uber.org/zap"
 )
 
 var (
@@ -16,6 +30,9 @@ var (
 	restore         = flag.Bool("r", server.DefaultRestore, "Загружать ранее сохранённые значения")
 	databaseDsn     = flag.String("d", server.DefaultDatabaseDSN, "Адрес подключения к БД")
 	key             = flag.String("k", server.DefaultKey, "Секретный ключ для подписи")
+	auditFile       = flag.String("audit-file", server.DefaultAuditFile, "Путь к файлу логов аудита")
+	auditURL        = flag.String("audit-url", server.DefaultAuditURL, "URL приёмника логов аудита")
+	pprofAddress    = flag.String("pprof-address", server.DefaultPprofAddress, "Адрес pprof, пусто выключает")
 )
 
 func init() {
@@ -30,10 +47,8 @@ func init() {
 func main() {
 	flag.Parse()
 
-	// создаём предустановленный регистратор zap
 	logger, err := zap.NewDevelopment()
 	if err != nil {
-		// вызываем панику, если ошибка
 		panic(err)
 	}
 	defer func() { _ = logger.Sync() }()
@@ -46,11 +61,16 @@ func main() {
 	s.Restore = *restore
 	s.DatabaseDSN = *databaseDsn
 	s.Key = *key
+	s.AuditFile = *auditFile
+	s.AuditURL = *auditURL
+	s.PprofAddress = *pprofAddress
 
 	err = env.Parse(s)
 	if err != nil {
 		logger.Error("Не удалось распарить окружение", zap.Error(err))
 	}
 
-	s.Run()
+	if err := s.Run(); err != nil {
+		logger.Fatal("Сервер остановлен с ошибкой", zap.Error(err))
+	}
 }

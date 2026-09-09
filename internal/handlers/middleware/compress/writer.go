@@ -1,25 +1,34 @@
+// Package compress сжимает ответы и распаковывает запросы в формате gzip.
 package compress
 
 import (
+	"bufio"
 	"compress/gzip"
 	"io"
 	"net/http"
 	"strings"
+	"sync"
 )
 
-// compressWriter реализует интерфейс http.ResponseWriter и позволяет прозрачно для сервера
-// сжимать передаваемые данные и выставлять правильные HTTP-заголовки
-type compressWriter struct {
-	w           http.ResponseWriter
-	zw          *gzip.Writer
-	wroteHeader bool
+var (
+	writers = sync.Pool{New: func() any {
+		cw := &compressWriter{}
+		cw.zw = gzip.NewWriter(&cw.w)
+		return cw
+	}}
+	readers = sync.Pool{New: func() any {
+		return &compressReader{br: bufio.NewReader(nil), zr: new(gzip.Reader)}
+	}}
+)
+
+type sink struct {
+	http.ResponseWriter
 }
 
-func newCompressWriter(w http.ResponseWriter) *compressWriter {
-	return &compressWriter{
-		w:  w,
-		zw: gzip.NewWriter(w),
-	}
+type compressWriter struct {
+	w           sink
+	zw          *gzip.Writer
+	wroteHeader bool
 }
 
 func (c *compressWriter) Header() http.Header {
@@ -50,26 +59,13 @@ func (c *compressWriter) Close() error {
 	return c.zw.Close()
 }
 
-// compressReader реализует интерфейс io.ReadCloser и позволяет прозрачно для сервера
-// декомпрессировать получаемые от клиента данные
 type compressReader struct {
 	r  io.ReadCloser
+	br *bufio.Reader
 	zr *gzip.Reader
 }
 
-func newCompressReader(r io.ReadCloser) (*compressReader, error) {
-	zr, err := gzip.NewReader(r)
-	if err != nil {
-		return nil, err
-	}
-
-	return &compressReader{
-		r:  r,
-		zr: zr,
-	}, nil
-}
-
-func (c compressReader) Read(p []byte) (n int, err error) {
+func (c *compressReader) Read(p []byte) (n int, err error) {
 	return c.zr.Read(p)
 }
 
@@ -80,41 +76,52 @@ func (c *compressReader) Close() error {
 	return c.zr.Close()
 }
 
+func (c *compressReader) release() {
+	c.br.Reset(nil)
+	c.r = nil
+	readers.Put(c)
+}
+
+// GzipMiddleware распаковывает запрос и сжимает ответ в формате gzip.
 func GzipMiddleware() func(http.Handler) http.Handler {
 	return func(next http.Handler) http.Handler {
 		return http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
-			// по умолчанию устанавливаем оригинальный http.ResponseWriter как тот,
-			// который будем передавать следующей функции
-			ow := w
-
-			// проверяем, что клиент умеет получать от сервера сжатые данные в формате gzip
-			acceptEncoding := r.Header.Get("Accept-Encoding")
-			supportsGzip := strings.Contains(acceptEncoding, "gzip")
-			if supportsGzip {
-				// оборачиваем оригинальный http.ResponseWriter новым с поддержкой сжатия
-				cw := newCompressWriter(w)
-				// меняем оригинальный http.ResponseWriter на новый
-				ow = cw
-				// не забываем отправить клиенту все сжатые данные после завершения middleware
-				defer cw.Close()
-			}
-
-			// проверяем, что клиент отправил серверу сжатые данные в формате gzip
 			contentEncoding := r.Header.Get("Content-Encoding")
 			sendsGzip := strings.Contains(contentEncoding, "gzip")
 			if sendsGzip {
-				// оборачиваем тело запроса в io.Reader с поддержкой декомпрессии
-				cr, err := newCompressReader(r.Body)
-				if err != nil {
-					w.WriteHeader(http.StatusInternalServerError)
+				cr := readers.Get().(*compressReader)
+				cr.br.Reset(r.Body)
+				if err := cr.zr.Reset(cr.br); err != nil {
+					cr.release()
+					w.WriteHeader(http.StatusBadRequest)
 					return
 				}
-				// меняем тело запроса на новое
+				cr.r = r.Body
 				r.Body = cr
-				defer cr.Close()
+				defer func() {
+					_ = cr.Close()
+					r.Body = cr.r
+					cr.release()
+				}()
 			}
 
-			// передаём управление хендлеру
+			ow := w
+
+			acceptEncoding := r.Header.Get("Accept-Encoding")
+			supportsGzip := strings.Contains(acceptEncoding, "gzip")
+			if supportsGzip {
+				cw := writers.Get().(*compressWriter)
+				cw.w.ResponseWriter = w
+				cw.wroteHeader = false
+				cw.zw.Reset(&cw.w)
+				ow = cw
+				defer func() {
+					_ = cw.Close()
+					cw.w.ResponseWriter = nil
+					writers.Put(cw)
+				}()
+			}
+
 			next.ServeHTTP(ow, r)
 		})
 	}

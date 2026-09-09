@@ -2,6 +2,7 @@ package storage
 
 import (
 	"context"
+	"fmt"
 	"testing"
 
 	"github.com/shigabutdinoff/metrics/internal/model/metrics"
@@ -82,4 +83,95 @@ func TestNewMemStorage(t *testing.T) {
 	if len(got.gauges) != 0 || len(got.counters) != 0 {
 		t.Fatalf("неожиданно непустые maps: gauges=%d counters=%d", len(got.gauges), len(got.counters))
 	}
+}
+
+func TestMemStorage_GetGauge(t *testing.T) {
+	ms := NewMemStorage()
+	ctx := context.Background()
+	v := 1.5
+	ms.SetGauge(ctx, "alloc", &v)
+
+	got := ms.GetGauge(ctx, "alloc")
+	if got == nil || *got != 1.5 {
+		t.Fatalf("GetGauge(alloc) = %v, ожидается 1.5", got)
+	}
+	if absent := ms.GetGauge(ctx, "absent"); absent != nil {
+		t.Fatalf("GetGauge(absent) = %v, ожидается nil", absent)
+	}
+}
+
+func TestMemStorage_GetCounter(t *testing.T) {
+	ms := NewMemStorage()
+	ctx := context.Background()
+	delta := int64(7)
+	ms.AddCounter(ctx, "requests", &delta)
+
+	got := ms.GetCounter(ctx, "requests")
+	if got == nil || *got != 7 {
+		t.Fatalf("GetCounter(requests) = %v, ожидается 7", got)
+	}
+	*got = 100
+	if again := ms.GetCounter(ctx, "requests"); *again != 7 {
+		t.Fatalf("копия счётчика изменила хранилище: %d", *again)
+	}
+	if absent := ms.GetCounter(ctx, "absent"); absent != nil {
+		t.Fatalf("GetCounter(absent) = %v, ожидается nil", absent)
+	}
+}
+
+func fillStorage(ms *MemStorage, n int) {
+	ctx := context.Background()
+	for i := range n {
+		v := float64(i) + 0.5
+		ms.SetGauge(ctx, fmt.Sprintf("Gauge%02d", i), &v)
+		delta := int64(i)
+		ms.AddCounter(ctx, fmt.Sprintf("Counter%02d", i), &delta)
+	}
+}
+
+func BenchmarkMemStorage_SetGauge(b *testing.B) {
+	ms := NewMemStorage()
+	ctx := context.Background()
+	v := 2457600.5
+
+	b.ReportAllocs()
+	for b.Loop() {
+		ms.SetGauge(ctx, "Alloc", &v)
+	}
+}
+
+func BenchmarkMemStorage_AddCounter(b *testing.B) {
+	ms := NewMemStorage()
+	ctx := context.Background()
+	delta := int64(1)
+
+	b.ReportAllocs()
+	for b.Loop() {
+		ms.AddCounter(ctx, "PollCount", &delta)
+	}
+}
+
+func benchGet(b *testing.B, get func()) {
+	b.ReportAllocs()
+	for b.Loop() {
+		get()
+	}
+}
+
+func BenchmarkMemStorage_GetAll(b *testing.B) {
+	ms := NewMemStorage()
+	fillStorage(ms, 45)
+	ctx := context.Background()
+
+	b.Run("gauges", func(b *testing.B) { benchGet(b, func() { ms.GetGauges(ctx) }) })
+	b.Run("counters", func(b *testing.B) { benchGet(b, func() { ms.GetCounters(ctx) }) })
+}
+
+func BenchmarkMemStorage_GetOne(b *testing.B) {
+	ms := NewMemStorage()
+	fillStorage(ms, 45)
+	ctx := context.Background()
+
+	b.Run("gauge", func(b *testing.B) { benchGet(b, func() { ms.GetGauge(ctx, "Gauge10") }) })
+	b.Run("counter", func(b *testing.B) { benchGet(b, func() { ms.GetCounter(ctx, "Counter10") }) })
 }

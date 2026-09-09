@@ -42,3 +42,13 @@ func TestMemStats_GetGauges(t *testing.T) {
 		t.Fatal("PollCount неожиданно присутствует в gauge map")
 	}
 }
+
+func BenchmarkMemStats_GetGauges(b *testing.B) {
+	var ms MemStats
+	runtime.ReadMemStats(&ms.MemStats)
+
+	b.ReportAllocs()
+	for b.Loop() {
+		ms.GetGauges()
+	}
+}

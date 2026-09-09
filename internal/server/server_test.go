@@ -4,25 +4,36 @@ import (
 	"bytes"
 	"compress/gzip"
 	"context"
+	"crypto/hmac"
+	"crypto/sha256"
+	"encoding/hex"
+	"encoding/json"
+	"fmt"
 	"io"
 	"net/http"
 	"net/http/httptest"
+	"os"
+	"path/filepath"
+	"strings"
+	"sync"
 	"testing"
+	"time"
 
-	"github.com/go-chi/chi/v5"
-	"github.com/shigabutdinoff/metrics/internal/handlers/middleware/compress"
-	"github.com/shigabutdinoff/metrics/internal/storage"
 	"github.com/stretchr/testify/require"
 	"go.uber.org/zap"
+
+	"github.com/shigabutdinoff/metrics/internal/audit"
+	"github.com/shigabutdinoff/metrics/internal/handlers/middleware/compress"
+	"github.com/shigabutdinoff/metrics/internal/handlers/middleware/reqbody"
+	"github.com/shigabutdinoff/metrics/internal/model/metrics"
+	"github.com/shigabutdinoff/metrics/internal/storage"
 )
 
 func TestNew(t *testing.T) {
 	st := storage.NewMemStorage()
 
-	// создаём предустановленный регистратор zap
 	logger, err := zap.NewDevelopment()
 	if err != nil {
-		// вызываем панику, если ошибка
 		panic(err)
 	}
 	defer logger.Sync()
@@ -40,7 +51,6 @@ func TestNew(t *testing.T) {
 		t.Fatalf("setupRoutes() роутер равен nil")
 	}
 
-	// Smoke-test маршрутов и обработчиков.
 	t.Run("GET /", func(t *testing.T) {
 		req := httptest.NewRequest(http.MethodGet, "/", nil)
 		rr := httptest.NewRecorder()
@@ -82,24 +92,21 @@ func TestNew(t *testing.T) {
 }
 
 func TestServer_Run(t *testing.T) {
-	t.Run("паникует при ошибке прослушивания", func(t *testing.T) {
-		s := &Server{
-			Storage: storage.NewMemStorage(),
-			Address: "bad",
-			Router:  chi.NewRouter(),
-		}
+	t.Run("возвращает ошибку прослушивания", func(t *testing.T) {
+		s := New(storage.NewMemStorage(), zap.NewNop())
+		s.Address = "bad"
 
-		defer func() {
-			if r := recover(); r == nil {
-				t.Fatalf("Run() не вызвал панику при ошибке прослушивания")
-			}
-		}()
+		require.Error(t, s.Run())
+	})
 
-		s.Run()
+	t.Run("возвращает ошибку аудита", func(t *testing.T) {
+		s := New(storage.NewMemStorage(), zap.NewNop())
+		s.Address = "bad"
+		s.AuditFile = filepath.Join(t.TempDir(), "missing", "audit.log")
+
+		require.ErrorIs(t, s.Run(), os.ErrNotExist)
 	})
 }
-
-// ...
 
 func TestGzipCompression(t *testing.T) {
 	requestBody := `{
@@ -110,7 +117,6 @@ func TestGzipCompression(t *testing.T) {
         "version": "1.0"
     }`
 
-	// ожидаемое содержимое тела ответа при успешном запросе
 	successBody := `{
         "response": {
             "text": "Извините, я пока ничего не умею"
@@ -177,4 +183,270 @@ func TestGzipCompression(t *testing.T) {
 
 		require.JSONEq(t, successBody, string(b))
 	})
+}
+
+func TestProfiler(t *testing.T) {
+	s := New(storage.NewMemStorage(), zap.NewNop())
+	s.setupRoutes()
+
+	req := httptest.NewRequest(http.MethodGet, "/debug/pprof/", nil)
+	rr := httptest.NewRecorder()
+	s.Router.ServeHTTP(rr, req)
+
+	require.Equal(t, http.StatusNotFound, rr.Code)
+
+	h := pprofHandler()
+	for _, path := range []string{"/debug/pprof/", "/debug/pprof/cmdline"} {
+		req := httptest.NewRequest(http.MethodGet, path, nil)
+		rr := httptest.NewRecorder()
+		h.ServeHTTP(rr, req)
+
+		require.Equalf(t, http.StatusOK, rr.Code, "GET %s", path)
+		require.NotEmptyf(t, rr.Body.Bytes(), "GET %s: пустое тело", path)
+	}
+}
+
+func sampleBatch() []metrics.Metrics {
+	batch := make([]metrics.Metrics, 0, 31)
+	for i := range 30 {
+		v := float64(i*1000) + 0.5
+		batch = append(batch, metrics.Metrics{ID: fmt.Sprintf("Gauge%02d", i), MType: metrics.Gauge, Value: &v})
+	}
+	delta := int64(42)
+	return append(batch, metrics.Metrics{ID: "PollCount", MType: metrics.Counter, Delta: &delta})
+}
+
+func gzipBytes(p []byte) []byte {
+	var buf bytes.Buffer
+	zw := gzip.NewWriter(&buf)
+	if _, err := zw.Write(p); err != nil {
+		panic(err)
+	}
+	if err := zw.Close(); err != nil {
+		panic(err)
+	}
+	return buf.Bytes()
+}
+
+func computeHMAC(key, data []byte) string {
+	mac := hmac.New(sha256.New, key)
+	mac.Write(data)
+	return hex.EncodeToString(mac.Sum(nil))
+}
+
+func updatesRequest(gz io.Reader, hash string) *http.Request {
+	req := httptest.NewRequest(http.MethodPost, "/updates/", gz)
+	req.Header.Set("Content-Type", "application/json")
+	req.Header.Set("Content-Encoding", "gzip")
+	req.Header.Set("Accept-Encoding", "gzip")
+	req.Header.Set("HashSHA256", hash)
+	return req
+}
+
+func newServer(key string) *Server {
+	s := New(storage.NewMemStorage(), zap.NewNop())
+	s.Key = key
+	s.setupRoutes()
+	return s
+}
+
+func BenchmarkRouter_Updates(b *testing.B) {
+	body, err := json.Marshal(sampleBatch())
+	require.NoError(b, err)
+	gz := gzipBytes(body)
+	hash := computeHMAC([]byte("secret"), body)
+
+	b.Run("gzip+hash", func(b *testing.B) {
+		s := newServer("secret")
+		rd := bytes.NewReader(gz)
+		req := updatesRequest(rd, hash)
+
+		b.ReportAllocs()
+		for b.Loop() {
+			rd.Reset(gz)
+			rr := httptest.NewRecorder()
+			s.Router.ServeHTTP(rr, req)
+			if rr.Code != http.StatusOK {
+				b.Fatalf("статус = %d, ожидается %d", rr.Code, http.StatusOK)
+			}
+		}
+	})
+
+	b.Run("gzip+hash parallel", func(b *testing.B) {
+		s := newServer("secret")
+
+		b.ReportAllocs()
+		b.RunParallel(func(pb *testing.PB) {
+			rd := bytes.NewReader(gz)
+			req := updatesRequest(rd, hash)
+			for pb.Next() {
+				rd.Reset(gz)
+				rr := httptest.NewRecorder()
+				s.Router.ServeHTTP(rr, req)
+				if rr.Code != http.StatusOK {
+					b.Errorf("статус = %d, ожидается %d", rr.Code, http.StatusOK)
+					return
+				}
+			}
+		})
+	})
+
+	b.Run("plain", func(b *testing.B) {
+		s := newServer("")
+		rd := bytes.NewReader(body)
+		req := httptest.NewRequest(http.MethodPost, "/updates/", rd)
+		req.Header.Set("Content-Type", "application/json")
+
+		b.ReportAllocs()
+		for b.Loop() {
+			rd.Reset(body)
+			rr := httptest.NewRecorder()
+			s.Router.ServeHTTP(rr, req)
+			if rr.Code != http.StatusOK {
+				b.Fatalf("статус = %d, ожидается %d", rr.Code, http.StatusOK)
+			}
+		}
+	})
+}
+
+func TestCloseAuditClosesFileSink(t *testing.T) {
+	s := New(storage.NewMemStorage(), zap.NewNop())
+	s.AuditFile = filepath.Join(t.TempDir(), "audit.log")
+
+	require.NoError(t, s.setupAudit())
+	require.Len(t, s.auditClosers, 1)
+	sink := s.auditClosers[0]
+
+	s.closeAudit()
+
+	require.ErrorIs(t, sink.Close(), os.ErrClosed)
+	require.Empty(t, s.auditClosers)
+}
+
+func TestSetupAuditFailsFast(t *testing.T) {
+	t.Run("файл аудита не открыть", func(t *testing.T) {
+		s := New(storage.NewMemStorage(), zap.NewNop())
+		s.AuditFile = filepath.Join(t.TempDir(), "missing", "audit.log")
+
+		require.ErrorIs(t, s.setupAudit(), os.ErrNotExist)
+		require.Nil(t, s.auditor)
+	})
+
+	t.Run("некорректный URL аудита", func(t *testing.T) {
+		s := New(storage.NewMemStorage(), zap.NewNop())
+		s.AuditURL = "not a url"
+
+		require.Error(t, s.setupAudit())
+		require.Nil(t, s.auditor)
+	})
+
+	t.Run("файл аудита закрывается при ошибке URL", func(t *testing.T) {
+		s := New(storage.NewMemStorage(), zap.NewNop())
+		s.Address = "bad"
+		s.AuditFile = filepath.Join(t.TempDir(), "audit.log")
+		s.AuditURL = "not a url"
+
+		require.Error(t, s.Run())
+		// приёмники закрыты и сброшены, дескриптор файла не утёк
+		require.Nil(t, s.auditor)
+		require.Empty(t, s.auditClosers)
+	})
+}
+
+// recordingSink копит события аудита, дошедшие до приёмника.
+type recordingSink struct {
+	mu     sync.Mutex
+	events []audit.Event
+}
+
+func (o *recordingSink) Update(_ context.Context, e audit.Event) error {
+	o.mu.Lock()
+	defer o.mu.Unlock()
+	o.events = append(o.events, e)
+	return nil
+}
+
+func (o *recordingSink) snapshot() []audit.Event {
+	o.mu.Lock()
+	defer o.mu.Unlock()
+	out := make([]audit.Event, len(o.events))
+	copy(out, o.events)
+	return out
+}
+
+func TestRouterPublishesAudit(t *testing.T) {
+	tests := []struct {
+		name        string
+		path        string
+		contentType string
+		body        string
+		want        []string
+	}{
+		{
+			name:        "текстовый роут",
+			path:        "/update/gauge/Sys/3",
+			contentType: "text/plain",
+			want:        []string{"Sys"},
+		},
+		{
+			name:        "json одна метрика",
+			path:        "/update/",
+			contentType: "application/json",
+			body:        `{"id":"Alloc","type":"gauge","value":1}`,
+			want:        []string{"Alloc"},
+		},
+		{
+			name:        "json пачка",
+			path:        "/updates/",
+			contentType: "application/json",
+			body:        `[{"id":"Alloc","type":"gauge","value":1},{"id":"Poll","type":"counter","delta":2}]`,
+			want:        []string{"Alloc", "Poll"},
+		},
+	}
+
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			sink := &recordingSink{}
+			p := audit.NewPublisher(zap.NewNop(), audit.WithCloseTimeout(time.Second))
+			p.Register(sink)
+
+			s := New(storage.NewMemStorage(), zap.NewNop())
+			s.auditor = p
+			s.setupRoutes()
+
+			req := httptest.NewRequest(http.MethodPost, tt.path, strings.NewReader(tt.body))
+			req.Header.Set("Content-Type", tt.contentType)
+			rr := httptest.NewRecorder()
+			s.Router.ServeHTTP(rr, req)
+			require.Equal(t, http.StatusOK, rr.Code)
+
+			p.Close()
+			events := sink.snapshot()
+			require.Len(t, events, 1)
+			require.Equal(t, tt.want, events[0].Metrics)
+		})
+	}
+}
+
+func TestBodyLimit(t *testing.T) {
+	// сжатое тело мало, распакованное больше лимита
+	var buf bytes.Buffer
+	buf.WriteByte('[')
+	buf.Write(bytes.Repeat([]byte(" "), reqbody.MaxBodySize+1))
+	buf.WriteString(`{"id":"Alloc","type":"gauge","value":1}]`)
+	body := gzipBytes(buf.Bytes())
+
+	for _, key := range []string{"", "secret"} {
+		t.Run("ключ="+key, func(t *testing.T) {
+			s := newServer(key)
+
+			req := httptest.NewRequest(http.MethodPost, "/updates/", bytes.NewReader(body))
+			req.Header.Set("Content-Type", "application/json")
+			req.Header.Set("Content-Encoding", "gzip")
+			rr := httptest.NewRecorder()
+			s.Router.ServeHTTP(rr, req)
+
+			require.Equal(t, http.StatusRequestEntityTooLarge, rr.Code)
+		})
+	}
 }

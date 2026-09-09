@@ -1,3 +1,4 @@
+// Package value содержит хендлеры чтения одной метрики.
 package value
 
 import (
@@ -9,10 +10,13 @@ import (
 	"strings"
 
 	"github.com/go-chi/chi/v5"
+
+	"github.com/shigabutdinoff/metrics/internal/handlers/middleware/reqbody"
 	"github.com/shigabutdinoff/metrics/internal/model/metrics"
 	"github.com/shigabutdinoff/metrics/internal/storage"
 )
 
+// ShowTextPlain обрабатывает GET /value/{type}/{name} и отдаёт число.
 func ShowTextPlain(st storage.Storage) http.HandlerFunc {
 	return func(res http.ResponseWriter, req *http.Request) {
 		name, err := url.PathUnescape(chi.URLParam(req, "name"))
@@ -24,7 +28,7 @@ func ShowTextPlain(st storage.Storage) http.HandlerFunc {
 		mType := metrics.Type(chi.URLParam(req, "type"))
 		switch mType {
 		case metrics.Gauge:
-			value := st.GetGauges(req.Context())[name]
+			value := st.GetGauge(req.Context(), name)
 			if value == nil {
 				http.Error(res, "метрика не найдена", http.StatusNotFound)
 				return
@@ -32,7 +36,7 @@ func ShowTextPlain(st storage.Storage) http.HandlerFunc {
 			res.WriteHeader(http.StatusOK)
 			_, _ = res.Write([]byte(strconv.FormatFloat(*value, 'f', -1, 64)))
 		case metrics.Counter:
-			value := st.GetCounters(req.Context())[name]
+			value := st.GetCounter(req.Context(), name)
 			if value == nil {
 				http.Error(res, "метрика не найдена", http.StatusNotFound)
 				return
@@ -45,11 +49,12 @@ func ShowTextPlain(st storage.Storage) http.HandlerFunc {
 	}
 }
 
+// ShowApplicationJSON обрабатывает POST /value/ и отдаёт значение метрики.
 func ShowApplicationJSON(st storage.Storage) http.HandlerFunc {
 	return func(res http.ResponseWriter, req *http.Request) {
 		var upd metrics.Metrics
 		if err := json.NewDecoder(req.Body).Decode(&upd); err != nil {
-			http.Error(res, err.Error(), http.StatusBadRequest)
+			reqbody.Error(res, err)
 			return
 		}
 
@@ -60,7 +65,7 @@ func ShowApplicationJSON(st storage.Storage) http.HandlerFunc {
 
 		switch upd.MType {
 		case metrics.Gauge:
-			value := st.GetGauges(req.Context())[upd.ID]
+			value := st.GetGauge(req.Context(), upd.ID)
 			if value == nil {
 				http.Error(res, "метрика не найдена", http.StatusNotFound)
 				return
@@ -68,7 +73,7 @@ func ShowApplicationJSON(st storage.Storage) http.HandlerFunc {
 			upd.Value = value
 			upd.Delta = nil
 		case metrics.Counter:
-			value := st.GetCounters(req.Context())[upd.ID]
+			value := st.GetCounter(req.Context(), upd.ID)
 			if value == nil {
 				http.Error(res, "метрика не найдена", http.StatusNotFound)
 				return
